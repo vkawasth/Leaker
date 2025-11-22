@@ -71,7 +71,6 @@ def build_edge_coordinates(nodes, edges):
 
 # Draw edges which are selected in chunk
 # we lookup nodes from all nodes.
-:wq
 for _, e in edges.iterrows():
     x1, y1, z1 = all_node_pos[e.node1id]
     x2, y2, z2 = all_node_pos[e.node2id]
