@@ -670,7 +670,7 @@ function bv_resolve_top_entropy!(
         bracket = EntropyBV.derived_bracket_from_Delta_general(flux, flux, A_sub)
 
         # Safe node correction — returns Vector{Float64}
-        #corr_vec = EntropyBV.c1_to_node_correction(bracket, m; convention=:in_minus_out)
+        corr_vec = EntropyBV.c1_to_node_correction(bracket, m; convention=:in_minus_out)
         if !(corr_vec isa AbstractVector{<:Real})
             @warn "c1_to_node_correction returned wrong type, using zero correction"
             corr_vec = zeros(m)
@@ -744,6 +744,9 @@ function simulate_entropy_p(params::EntropyPriorParams; steps=100, dt=1e-4)
         end
     end
     p_final = p
+    ################ Saved exceptional nodes ##############
+    # We will Blow Down these nodes during SBI inferenceing
+    ###### To save more nodes increase this fraction ######
     top = top_entropy_nodes(p_final; frac=0.01)
 
     
@@ -1201,7 +1204,12 @@ function apply_bv_resolution_top_entropy!(
     perturb = EntropyBV.c1_from_edgevals(edge_u, edge_v, idxmap, perturb_vals)
 
     # 7. Gerstenhaber bracket = [flux, perturb] via commutator
-    bracket = EntropyBV.c1_commutator_bracket(flux, perturb, m)
+    # bracket = EntropyBV.c1_commutator_bracket(flux, perturb, m)
+    # Use the BV-derived bracket: {flux, flux} = -Δ(flux ∪ flux)
+    # This uses the C2 paths to calculate the correction.
+    # We use {flux, flux} as the most direct homological probe of the flux field's self-interaction.
+    # BV Operator
+    bracket = EntropyBV.derived_bracket_from_Delta_general(flux, flux, A_sub)
 
     # 8. Convert to node correction (antisymmetric → lifts degeneracy)
     corr_local = EntropyBV.c1_to_node_correction(bracket, m; convention=:in_minus_out)
@@ -1367,6 +1375,7 @@ if abspath(PROGRAM_FILE) == @__FILE__
     println("SINGLE SIMULATION DONE — NOW GENERATING SBI DATASET")
     println("="^60)
 
+    #=
     # 2. THIS IS WHERE generate_sbi_dataset IS CALLED
     # Warning for C++ creators coming to Julia, Python etc...
     # Nested functions can use variables that are not explicitly passed as 
@@ -1385,5 +1394,5 @@ if abspath(PROGRAM_FILE) == @__FILE__
     println("   • Full SBI dataset (sbi_dataset.bson)")
     println("   • Ready for neural posterior training")
     println("\nNext step: run the training script (or add it here)!")
-    
+    =#
 end
