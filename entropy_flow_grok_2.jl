@@ -12,6 +12,8 @@ using Graphs
 using Base.Threads
 using BSON
 using GeometryBasics
+using Distributions: Uniform
+using StatsFuns: logistic
 
 # “Anatomically Constrained Bayesian Inference in the Mouse Brain: A Maximum-Entropy Prior Derived from 
 # Hierarchical Cortical Expectations”
@@ -270,7 +272,35 @@ end
 
 function load_edges(path_or_io)
     df = CSV.read(path_or_io, DataFrame; delim=';',header=true,ignorerepeated=true)
-    rename!(df, names(df) .=> lowercase.(String.(names(df))))
+    #=
+    >>id<<
+    >>n1<<
+    >>n2<<
+    >>length<<
+    >>distance<<
+    >>curveness<<
+    >>volume<<
+    >>avgcrosssection<<
+    >>minradiusavg<<
+    >>minradiusstd<<
+    >>avgradiusavg<<
+    >>avgradiusstd<<
+    >>maxradiusavg<<
+    >>maxradiusstd<<
+    >>roundnessavg<<
+    >>roundnessstd<<
+    >>node1_degree<<
+    >>node2_degree<<
+    >>num_voxels<<
+    >>hasnodeatsampleborder<<
+    =#
+    mapping = Dict(
+        col => Symbol(strip(lowercase(String(col))))
+        for col in names(df)
+    )
+    rename!(df, mapping)
+    #rename!(df, names(df) .=> lowercase.(String.(names(df))))
+    #println("Edge", names(df))
     # Expect at least node1id and node2id (or node1_id etc). Normalize known names
     if "node1id" ∈ names(df)
         rename!(df, :node1id => :n1, :node2id => :n2)
@@ -293,9 +323,97 @@ function build_index_mapping(nodes_df, edges_df)
     return id2idx, all_ids, length(all_ids)
 end
 
+# Geometric probability flow.
+# ==============================================================
+# Build adjacency with safe access + radius/length weighting
+# ==============================================================
+
+"""
+build_adjacency(edges_df, id2idx; mode=:inverse_length)
+
+Modes:
+    :inverse_length       →   w = 1/length
+    :radius               →   w = radius
+    :radius_over_length   →   w = radius / length
+    :area_over_length     →   w = (π * radius^2) / length
+"""
+function build_adjacency(
+    edges_df,
+    id2idx;
+    mode = :inverse_length,
+    length_col = :length,
+    radius_col = :avgRadiusAvg,
+)
+
+    # Number of nodes
+    n = maximum(values(id2idx))
+
+    I = Int[]
+    J = Int[]
+    V = Float64[]
+
+    for row in eachrow(edges_df)
+        # map edge endpoints to internal indices
+        # :node1id is :n1, :node2id is :n2
+        u = get(id2idx, row.n1, nothing)
+        v = get(id2idx, row.n2, nothing)
+        (u === nothing || v === nothing) && continue
+
+        # ---------- EXTRACT LENGTH ----------
+        len = try
+            Float64(row[length_col])
+        catch
+            missing
+        end
+
+        # ---------- EXTRACT RADIUS ----------
+        rad = try
+            Float64(row[radius_col])
+        catch
+            missing
+        end
+
+        # ---------- EDGE WEIGHT MODE ----------
+        w = 1.0  # default
+
+        if mode == :inverse_length
+            if !(ismissing(len) || len <= 0)
+                w = 1/len
+            end
+
+        elseif mode == :radius
+            if !(ismissing(rad) || rad <= 0)
+                w = rad
+            end
+
+        elseif mode == :radius_over_length
+            if !(ismissing(len) || ismissing(rad) || len <= 0 || rad <= 0)
+                w = rad/len
+            end
+
+        elseif mode == :area_over_length
+            if !(ismissing(len) || ismissing(rad) || len <= 0 || rad <= 0)
+                area = π * rad^2
+                w = area/len
+            end
+
+        else
+            error("Unknown mode: $mode")
+        end
+
+        # ---------- Push symmetric adjacency ----------
+        push!(I, u, v)
+        push!(J, v, u)
+        push!(V, w, w)
+    end
+
+    return sparse(I, J, V, n, n)
+end
+
 # ==============================================================
 # 3. Build adjacency matrix (fast & safe)
 # ==============================================================
+#=
 function build_adjacency(edges_df, id2idx; weight_col=:length)
     n = maximum(values(id2idx))
     I, J, V = Int[], Int[], Float64[]
@@ -317,6 +435,7 @@ function build_adjacency(edges_df, id2idx; weight_col=:length)
     end
     A = sparse(I, J, V, n, n)
 end
+=#
 
 # Compute average entropy in regions (needs nodes.regions)
 function regional_entropy(p::Vector{Float64}, nodes::DataFrame, region_names::Vector{String})
@@ -564,32 +683,79 @@ function bv_resolve_top_entropy!(
     return nothing
 end
 
+# only save what matters, LOW COST AI
+
+function top_entropy_nodes(p; frac = 0.01)
+    n = length(p)
+    h = @. (-p * log(p))
+    k = max(1, round(Int, frac * n))
+    idx = partialsortperm(h, rev=true, 1:k)
+    return (idx = idx, p_top = p[idx], h_top = h[idx])
+end
+
 # ==============================================================
 # 6. SIMULATION & SBI
 # ==============================================================
 function simulate_entropy_p(params::EntropyPriorParams; steps=8000, dt=1e-4)
-    π = make_parameterized_prior(nodes, params)
+    n = length(res.p)
+    π = make_parameterized_prior(res.nodes, params)
     p = fill(1.0/n, n) .+ 1e-8*randn(n); p ./= sum(p)
-
+    # run_entropy_sim creates it as well, which simulate_entropy_p will not have.
+    
+    prev_H_ref = Ref{Float64}(NaN)
     dp = similar(p)                     # ← CREATE dp HERE
     fill!(dp, 0.0)                      # ← zero it
-    for _ in 1:steps
+    for it in 1:steps
         # 1. Compute dp (true derivative)
         #compute_dp!(dp, p, π, A; mobility=:diag)
         # p is updated inside entropy_flow_step
-        entropy_flow_step!(p, π, A, dp, dp; dt=dt, mobility=:laplacian, update_fraction=0.2)
+        # we are creating 5000 samples laplacian will take 2x.
+        entropy_flow_step!(p, π, res.A, dp; dt=dt, mobility=:diag, update_fraction=0.2)
+        # run_entropy_sim calls it for normal runs...
+        # we want to have large perturbations as well
+        # for Simulation I will change modality to :diag from :laplacian
+        if it >= 50 && it % 40 == 0
+            current_H = shannon_entropy(p)
+            if !isnan(prev_H_ref[])
+                ΔH = abs(current_H - prev_H)
+                if ΔH < 1e-10 || any(p .< 1e-12)  # actual stagnation
+                    @info "BV ACTIVATED — stagnation detected ΔH=$ΔH"
+                    bv_resolve_top_entropy!(p, dp, res.A; current_step=it, alpha=2e-3)
+                    # ← APPLY THE FINAL dp (this is the missing piece!)
+                    @inbounds @simd for i in eachindex(p)
+                        p[i] += dt * dp[i]
+                    end
+                    p .= max.(p, 1e-15)
+                    p ./= sum(p)
+                end
+            end
+            prev_H = current_H
+        end
     end
-    outcomes = simulate_outcomes(p, nodes; noise=params.noise)
-    return (p=p, outcomes=outcomes)
+    p_final = p
+    top = top_entropy_nodes(p_final; frac=0.01)
+
+
+    outcomes = simulate_outcomes(p_final, res.nodes; noise=params.noise)
+    return (p=p_final, top_entropy = top, outcomes=outcomes)
 end
 
+using Base.Threads
 function generate_sbi_dataset(N=10_000; path="sbi_dataset.bson")
     θs = [sample_prior_params() for _ in 1:N]
     sims = Vector{Any}(undef, N)
+    counter = Base.Threads.Atomic{Int}(0)
     @info "Generating $N simulations..."
     @threads for i in 1:N
+        # thread-safe increment
+        newval = Base.Threads.atomic_add!(counter, 1)
+
+        # Print progress every 5 simulations (change as you like)
+        if newval % 5 == 0
+            @info "Completed $newval / $N"
+        end
         sims[i] = simulate_entropy_p(θs[i])
-        i % 500 == 0 && println("→ $i/$N")
+        i % 10 == 0 && println("→ $i/$N")
     end
     BSON.@save path θs sims
     @info "Saved → $path"
@@ -617,7 +783,11 @@ function run_entropy_sim(nodes_path, edges_path;
     end
     =#
     id2idx, idx2id, n = build_index_mapping(nodes, edges)
-    A = build_adjacency(edges, id2idx)
+    # we will flow probability geometrically.
+    # shorter edges will get more.
+    #println(names(edges))
+    #foreach(n -> println(">>" * String(n) * "<<"), names(edges))
+    A = build_adjacency(edges, id2idx, mode=:inverse_length)
 
     @info "Graph built: $n nodes, $(nnz(A)÷2) undirected edges"
 
@@ -1034,82 +1204,6 @@ function apply_bv_resolution_top_entropy!(
     return nothing
 end
 
-
-
-# ==============================================================
-# 6. SIMULATION & SBI
-# ==============================================================
-function simulate_entropy_p(params::EntropyPriorParams; steps=8000, dt=1e-4)
-    π = make_parameterized_prior(nodes, params)
-    p = fill(1.0/n, n) .+ 1e-8*randn(n); p ./= sum(p)
-    for it in 1:steps
-        # ← BV resolver needs dp
-        dp = similar(p)                     # ← CREATE dp HERE
-        fill!(dp, 0.0)                      # ← zero it
-
-        # 1. Compute dp (true derivative) - dp is computed and applied inside 
-        # entropy flow step.
-        #compute_dp!(dp, p, π, A; mobility=:diag)
-        # p is updated inside entropy_flow_step
-        entropy_flow_step!(p, π, A, dp; dt=dt, mobility=:laplacian, update_fraction=0.2)
-        # ← THIS IS THE ONLY LINE YOU NEED -- trigger BV resolver and disrupt entropy
-
-        if it == 301
-            @info "NUCLEAR BV TEST — FORCING HOMOLOGICAL KICK NOW"
-            bv_resolve_top_entropy!(p, dp, A;
-                current_step = it,
-                top_fraction = 0.15,     # bigger patch → more dramatic
-                alpha = 0.02,            # 20× stronger than usual
-                perturb_kicks = 40       # massive random blow-up
-            )
-            # ← APPLY THE FINAL dp (this is the missing piece!)
-            @inbounds @simd for i in eachindex(p)
-                p[i] += dt * dp[i]
-            end
-            p .= max.(p, 1e-15)
-            p ./= sum(p)
-        end
-        if it >= 50 && it % 40 == 0
-            current_H = shannon_entropy(p)
-            if haskey(@__MODULE__, :prev_H)
-                ΔH = abs(current_H - prev_H)
-                if ΔH < 1e-10 || any(p .< 1e-12)  # actual stagnation
-                    @info "BV ACTIVATED — stagnation detected ΔH=$ΔH"
-                    bv_resolve_top_entropy!(p, dp, A; current_step=it, alpha=2e-3)
-                    # ← APPLY THE FINAL dp (this is the missing piece!)
-                    @inbounds @simd for i in eachindex(p)
-                        p[i] += dt * dp[i]
-                    end
-                    p .= max.(p, 1e-15)
-                    p ./= sum(p)
-                end
-            end
-            prev_H = current_H
-        end
-        
-        
-
-        if it % max(1, steps÷10) == 0
-            @info "step $it | H[p] = $(round(shannon_entropy(p), digits=6)) | min(p) = $(minimum(p))"
-        end
-    end
-    
-    outcomes = simulate_outcomes(p, nodes; noise=params.noise)
-    return (p=p, outcomes=outcomes)
-end
-
-function generate_sbi_dataset(N=10_000; path="sbi_dataset.bson")
-    θs = [sample_prior_params() for _ in 1:N]
-    sims = Vector{Any}(undef, N)
-    @info "Generating $N simulations..."
-    @threads for i in 1:N
-        sims[i] = simulate_entropy_p(θs[i])
-        i % 500 == 0 && println("→ $i/$N")
-    end
-    BSON.@save path θs sims
-    @info "Saved → $path"
-end
-
 using WriteVTK
 using Colors  # for distinguishable_colors
 
@@ -1263,10 +1357,14 @@ if abspath(PROGRAM_FILE) == @__FILE__
     println("="^60)
 
     # 2. THIS IS WHERE generate_sbi_dataset IS CALLED
-    #=
+    # Warning for C++ creators coming to Julia, Python etc...
+    # Nested functions can use variables that are not explicitly passed as 
+    # input arguments. In a parent function, you can create a handle to a 
+    # nested function that contains the data necessary to run the nested function.
     if !isfile("sbi_dataset.bson") || filesize("sbi_dataset.bson") < 10_000_000
         @info "Generating 10,000 simulations for SBI (this takes 1–6 hours)..."
-        generate_sbi_dataset(10_000; path="sbi_dataset.bson")
+        # will use global res parameters such as res.nodes, res.edges res.p res.A etc.
+        generate_sbi_dataset(60; path="sbi_dataset.bson")
     else
         @info "SBI dataset already exists → skipping generation"
     end
@@ -1276,5 +1374,5 @@ if abspath(PROGRAM_FILE) == @__FILE__
     println("   • Full SBI dataset (sbi_dataset.bson)")
     println("   • Ready for neural posterior training")
     println("\nNext step: run the training script (or add it here)!")
-    =#
+    
 end

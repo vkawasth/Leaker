@@ -421,4 +421,443 @@ end
 #Base.delete_method.(methods(EntropyBV.c1_to_node_correction))
 #@info "c1_to_node_correction RELOADED — returns Vector{Float64}"
 
+#############################
+# BLOW DOWN
+#############################
+# ============================================================
+# Blow-down operator (BV blow-down / ideal quotient A -> A')
+# ============================================================
+
+"""
+select_exceptional_nodes(p::AbstractVector; top_fraction=0.01)
+
+Return indices of nodes in the top percentage (default 1%)
+by magnitude (entropy, probability, or flux field).
+"""
+function select_exceptional_nodes(p::Vector{Float64}; top_fraction=0.01)
+    m = length(p)
+    k = max(1, round(Int, m * top_fraction))
+    # partial sort by absolute value
+    idx = partialsortperm(p, rev=true, 1:k, by=abs)
+    return sort(idx)
+end
+
+
+"""
+build_blowdown_mask(m, exceptional_nodes)
+
+Return a Bool vector keep[1..m] where keep[i] = true iff node i survives
+the blow-down. (Exceptional nodes are removed.)
+"""
+function build_blowdown_mask(m::Int, exceptional::Vector{Int})
+    keep = trues(m)
+    for i in exceptional
+        keep[i] = false
+    end
+    return keep
+end
+
+
+"""
+blowdown_C1(c1::C1, keep::Vector{Bool})
+
+Return a new C1 in which all edges touching an exceptional node
+(keep[u]==false or keep[v]==false) are removed.
+
+Implements the ideal quotient A/I: edges in the ideal are sent to 0.
+"""
+function blowdown_C1(c1::C1, keep::Vector{Bool})
+    u_new = Int[]
+    v_new = Int[]
+    vals_new = Float64[]
+    idxmap_new = Dict{Tuple{Int,Int},Int}()
+
+    k_new = 0
+    for k in eachindex(c1.vals)
+        u = c1.u[k]
+        v = c1.v[k]
+        if keep[u] && keep[v]
+            k_new += 1
+            push!(u_new, u)
+            push!(v_new, v)
+            push!(vals_new, c1.vals[k])
+            idxmap_new[(u,v)] = k_new
+        end
+    end
+
+    return C1(u_new, v_new, vals_new, idxmap_new)
+end
+
+
+"""
+blowdown_C2(c2::C2, keep)
+
+Same idea: remove all 2-paths touching exceptional nodes.
+"""
+function blowdown_C2(c2::C2, keep::Vector{Bool})
+    u2 = Int[]; v2 = Int[]; w2 = Int[]; vals2 = Float64[]
+    idxmap2 = Dict{Tuple{Int,Int,Int},Int}()
+
+    k2 = 0
+    for k in eachindex(c2.vals)
+        u = c2.u[k]; v = c2.v[k]; w = c2.w[k]
+        if keep[u] && keep[v] && keep[w]
+            k2 += 1
+            push!(u2, u); push!(v2, v); push!(w2, w)
+            push!(vals2, c2.vals[k])
+            idxmap2[(u,v,w)] = k2
+        end
+    end
+
+    return C2(u2, v2, w2, vals2, idxmap2)
+end
+
+
+"""
+blowdown_graph(A_sub, keep)
+
+Return A_sub' = A_sub restricted to surviving nodes (kept nodes).
+This is π: A -> A'.
+
+We keep node ordering the same (1..m), only delete rows/cols.
+"""
+function blowdown_graph(A_sub::SparseMatrixCSC, keep::Vector{Bool})
+    inds = findall(keep)
+    return A_sub[inds, inds]
+end
+
+
+"""
+perform_blowdown(p_active, A_sub, C1_or_C2...; top_fraction=0.01)
+
+Top-level blow-down driver:
+- select exceptional nodes (top 1%)
+- build mask
+- restrict graph
+- blow-down any C1/C2 structures passed in as a tuple
+
+Returns:
+    keep_mask, A_sub', blown_down_objects...
+"""
+function perform_blowdown(p::Vector{Float64}, A_sub::SparseMatrixCSC,
+                          objs...; top_fraction=0.01)
+
+    m = length(p)
+    exceptional = select_exceptional_nodes(p; top_fraction=top_fraction)
+    keep = build_blowdown_mask(m, exceptional)
+
+    # blow-down graph adjacency
+    A_new = blowdown_graph(A_sub, keep)
+
+    # blow-down all cochains
+    blown = Tuple(
+        obj isa C1 ? blowdown_C1(obj, keep) :
+        obj isa C2 ? blowdown_C2(obj, keep) :
+        error("Unsupported type in blowdown: $(typeof(obj))")
+        for obj in objs
+    )
+
+    return keep, A_new, blown...
+end
+
+# ---------------------------
+# Linearize BV correction operator: compute J \approx d(dp)/d(p)
+# ---------------------------
+"""
+linearize_BV_kernel(p::Vector{Float64}, A_sub::SparseMatrixCSC,
+                    edge_u::Vector{Int}, edge_v::Vector{Int};
+                    alpha=1e-3, eps=1e-6, nprobes = nothing)
+
+Return dense Jacobian matrix J (m×m) approximating the map p -> dp produced by
+integrate_BV_correction!. Uses forward-difference probing. For efficiency you
+can provide nprobes (Int) < m to only probe that many coordinate directions;
+if nprobes==nothing we probe all coordinates.
+
+Note: m should be small enough (active subgraph).
+"""
+function linearize_BV_kernel(p::Vector{Float64}, A_sub::SparseMatrixCSC,
+                             edge_u::Vector{Int}, edge_v::Vector{Int};
+                             alpha::Float64=1e-3, eps::Float64=1e-6, nprobes=nothing)
+
+    m = length(p)
+    # baseline dp
+    dp0 = zeros(Float64, m)
+    integrate_BV_correction!(p, dp0, A_sub, edge_u, edge_v; alpha=alpha)
+
+    probes = nprobes === nothing ? collect(1:m) : collect(1:min(nprobes,m))
+    J = zeros(Float64, m, length(probes))
+
+    # reuse temporaries
+    p_pert = copy(p)
+    for (j_idx, j) in enumerate(probes)
+        p_pert .= p
+        p_pert[j] += eps
+        dp1 = zeros(Float64, m)
+        integrate_BV_correction!(p_pert, dp1, A_sub, edge_u, edge_v; alpha=alpha)
+        J[:, j_idx] .= (dp1 .- dp0) ./ eps
+    end
+
+    # if we probed all coords, return square J, otherwise expand to full m×m with columns probed
+    if length(probes) == m
+        return J
+    else
+        # embed probed columns into full matrix with unprobed columns as zeros
+        Jfull = zeros(Float64, m, m)
+        for (idx, col) in enumerate(probes)
+            Jfull[:, col] .= J[:, idx]
+        end
+        return Jfull
+    end
+end
+
+# ---------------------------
+# Local Jacobian / singular locus scoring
+# ---------------------------
+"""
+local_jacobian_scores(J::AbstractMatrix, A_sub::SparseMatrixCSC; radius=1)
+
+Given the (m×m) Jacobian J and adjacency A_sub, compute for each node i a local
+score = smallest singular value of the submatrix J[S,S], where S = {i} ∪ N(i)
+(or extended neighborhood if radius>1). Returns vector scores of length m.
+
+Smaller score => closer to singular; you may threshold or pick top k.
+"""
+function local_jacobian_scores(J::AbstractMatrix, A_sub::SparseMatrixCSC; radius::Int=1)
+    m = size(J,1)
+    # build neighbors list
+    neigh = Vector{Vector{Int}}(undef, m)
+    for i in 1:m
+        neigh[i] = Int[]
+    end
+    rows, cols, _ = findnz(A_sub)
+    for (r,c) in zip(rows, cols)
+        push!(neigh[r], c)
+        push!(neigh[c], r)  # treat undirected for neighborhood
+    end
+
+    # expand neighborhood to radius
+    function neighborhood(i, r)
+        S = Set{Int}([i])
+        frontier = Set{Int}([i])
+        for t in 1:r
+            newf = Set{Int}()
+            for v in frontier
+                for w in neigh[v]
+                    if !(w in S)
+                        push!(newf, w)
+                        push!(S, w)
+                    end
+                end
+            end
+            frontier = newf
+            if isempty(frontier) break end
+        end
+        return sort(collect(S))
+    end
+
+    scores = zeros(Float64, m)
+    for i in 1:m
+        S = neighborhood(i, radius)
+        Js = J[S, S]
+        # numerical SVD: compute smallest singular value robustly via svdvals
+        s = svdvals(Js)
+        scores[i] = minimum(s)  # small => near-singular
+    end
+    return scores
+end
+
+
+# ---------------------------
+# Entropy discrepancy (crepant check)
+# ---------------------------
+"""
+node_entropy(p::Vector{Float64}; eps=1e-12)
+
+Default per-node entropy density: -p log(p + eps)
+"""
+function node_entropy(p::Vector{Float64}; eps::Float64=1e-12)
+    return .- (p .* log.(p .+ eps))
+end
+
+"""
+compute_entropy_discrepancy(p_before::Vector{Float64}, p_after::Vector{Float64},
+                            exceptional_sets::Vector{Vector{Int}};
+                            entropy_fn = node_entropy)
+
+Compute discrepancy per exceptional component: sum_entropy(after_nodes_assigned) - sum_entropy(before_nodes).
+Assumes indices are in the SAME indexing frame (if after uses compacted indices, remap first).
+Returns vector of discrepancies (one per exceptional set).
+"""
+function compute_entropy_discrepancy(p_before::Vector{Float64}, p_after::Vector{Float64},
+                                     exceptional_sets::Vector{Vector{Int}};
+                                     entropy_fn = node_entropy)
+
+    S_before = entropy_fn(p_before)
+    S_after = entropy_fn(p_after)
+
+    discs = Float64[]
+    for comp in exceptional_sets
+        # comp is vector of original indices collapsed into a representative in after;
+        # we sum before entropy over comp and compare to after on that representative (if available).
+        sum_before = sum(S_before[comp])
+        # Heuristic: find representative index in after by e.g. first kept index of comp
+        # If no representative available, we compare to zero (fully removed)
+        rep = nothing
+        for i in comp
+            if i <= length(p_after) && !iszero(p_after[i])  # heuristic rep detection
+                rep = i; break
+            end
+        end
+        sum_after = rep === nothing ? 0.0 : S_after[rep]
+        push!(discs, sum_after - sum_before)
+    end
+    return discs
+end
+
+# ---------------------------
+# Index compaction: relabel kept nodes to 1..mnew and remap C1/C2
+# ---------------------------
+"""
+compact_indices(keep::Vector{Bool})
+
+Return new_index_map::Dict{Int,Int} mapping old_index -> new_index (only kept),
+and inv map new2old::Vector{Int}.
+"""
+function compact_indices(keep::Vector{Bool})
+    new2old = Int[]
+    old2new = Dict{Int,Int}()
+    for i in 1:length(keep)
+        if keep[i]
+            push!(new2old, i)
+            old2new[i] = length(new2old)
+        end
+    end
+    return old2new, new2old
+end
+
+"""
+remap_C1_C2_to_compact(c1::C1, c2::C2, old2new::Dict{Int,Int})
+
+Return (c1_new, c2_new) remapped to compact indices. If an edge/path refers to removed index, drop it.
+"""
+function remap_C1_C2_to_compact(c1::C1, c2::C2, old2new::Dict{Int,Int})
+    # remap C1
+    u_new = Int[]; v_new = Int[]; vals1 = Float64[]; idx1 = Dict{Tuple{Int,Int},Int}()
+    k = 0
+    for i in eachindex(c1.vals)
+        ou, ov = c1.u[i], c1.v[i]
+        if haskey(old2new, ou) && haskey(old2new, ov)
+            k += 1
+            uu = old2new[ou]; vv = old2new[ov]
+            push!(u_new, uu); push!(v_new, vv); push!(vals1, c1.vals[i])
+            idx1[(uu,vv)] = k
+        end
+    end
+    c1n = C1(u_new, v_new, vals1, idx1)
+
+    # remap C2
+    u2n = Int[]; v2n = Int[]; w2n = Int[]; vals2 = Float64[]; idx2 = Dict{Tuple{Int,Int,Int},Int}()
+    kk = 0
+    for i in eachindex(c2.vals)
+        ou, ov, ow = c2.u[i], c2.v[i], c2.w[i]
+        if haskey(old2new, ou) && haskey(old2new, ov) && haskey(old2new, ow)
+            kk += 1
+            push!(u2n, old2new[ou]); push!(v2n, old2new[ov]); push!(w2n, old2new[ow])
+            push!(vals2, c2.vals[i])
+            idx2[(u2n[end], v2n[end], w2n[end])] = kk
+        end
+    end
+    c2n = C2(u2n, v2n, w2n, vals2, idx2)
+
+    return c1n, c2n
+end
+
+# ---------------------------
+# Spectral embedding for compact graph (fallback reconstructor)
+# ---------------------------
+"""
+spectral_embedding(A_sub::SparseMatrixCSC; dim=2)
+
+Compute a simple spectral embedding using the unnormalized graph Laplacian:
+- compute Lap = D - A
+- take eigenvectors 2..(dim+1) (skip trivial eigenvector)
+Return coords::Matrix(dim, n).
+"""
+function spectral_embedding(A_sub::SparseMatrixCSC; dim::Int=2)
+    n = size(A_sub,1)
+    degs = zeros(Float64, n)
+    rows, cols, vals = findnz(A_sub)
+    for (r, _) in zip(rows, cols)
+        degs[r] += 1.0
+    end
+    D = Diagonal(degs)
+    L = Matrix(D) - Matrix(A_sub)  # small n, keep dense for eig
+    vals_eig, vecs = eigen(Symmetric(L))
+    # eigenvalues sorted ascending; skip first (should be ~0)
+    coords = zeros(Float64, n, dim)
+    for k in 1:dim
+        coords[:, k] .= vecs[:, k+1]
+    end
+    return coords   # n × dim
+end
+
+"""
+reconstruct_coords(original_pos::Union{Nothing,Dict{Int,Vector{Float64}}}, old2new::Dict{Int,Int},
+                   new2old::Vector{Int}, A_compact::SparseMatrixCSC; dim=2)
+
+Return coords_new::Matrix{Float64} (nnew × dim).
+- If original_pos provided, their coordinates are used as anchors for nodes present in original_pos.
+- For nodes without anchors, use spectral embedding and then align so anchored nodes keep their coords (affine alignment).
+"""
+function reconstruct_coords(original_pos::Union{Nothing,Dict{Int,Vector{Float64}}}, old2new, new2old,
+                            A_compact::SparseMatrixCSC; dim::Int=2)
+    nnew = size(A_compact,1)
+    coords = zeros(Float64, nnew, dim)
+
+    # collect anchors
+    has_anchor = falses(nnew)
+    anchor_idx = Int[]
+    anchor_coords = Float64[]
+    for (j, oldi) in enumerate(new2old)
+        if original_pos !== nothing && haskey(original_pos, oldi)
+            coords[j, :] .= original_pos[oldi][1:dim]
+            has_anchor[j] = true
+            push!(anchor_idx, j)
+        end
+    end
+
+    # if all anchored, done
+    if all(has_anchor)
+        return coords
+    end
+
+    # spectral baseline
+    spec = spectral_embedding(A_compact; dim=dim)  # nnew × dim
+
+    # if there are anchors, compute affine transform from spec[anchors] -> coords[anchors]
+    if !isempty(anchor_idx)
+        # build matrices
+        m = length(anchor_idx)
+        X = zeros(2, m); Y = zeros(2, m)
+        for (k, idx) in enumerate(anchor_idx)
+            X[:, k] = spec[idx, 1:2]
+            Y[:, k] = coords[idx, 1:2]
+        end
+        # find best affine transform: Y ≈ A*X + t
+        μx = mean(X, dims=2); μy = mean(Y, dims=2)
+        Xc = X .- μx; Yc = Y .- μy
+        # linear part
+        A_lin = Yc * pinv(Xc)
+        t = vec(μy .- A_lin * μx)
+        for i in 1:nnew
+            coords[i, :] = vec(A_lin * spec[i, 1:2] .+ t)
+        end
+    else
+        # no anchors: use spectral directly
+        coords .= spec
+    end
+
+    return coords
+end
+
 end # module EntropyBV

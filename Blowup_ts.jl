@@ -139,6 +139,50 @@ function select_backward_nodes(node_dict, region_fractions, active_forward::Set{
     return active_backward
 end
 
+# ---------------------------
+# Entropy flow struct
+# ---------------------------
+mutable struct EntropyFlow
+    name::Symbol
+    values::Vector{Float64}  # entropy per outcome
+end
+
+# ---------------------------
+# 1. BV delta operator -- full arithmetic view of blow up.
+# ---------------------------
+# This represents the Batalin-Vilkovisky differential acting on entropy flows.
+# It deforms, shifts, and normalizes the entropy vector while preserving total entropy.
+function bv_delta_operator(flow::EntropyFlow; alpha=1.0, shift=0.0)
+    # 1. Deformation: element-wise exponentiation
+    deformed = [v^alpha for v in flow.values]
+    
+    # 2. Shift: additive shift per element
+    shifted = [v + shift for v in deformed]
+    
+    # 3. Normalization: ensure total entropy remains the same
+    total = sum(shifted)
+    normalized = shifted .* (sum(flow.values)/total)
+    
+    return EntropyFlow(Symbol(flow.name, "_bv"), normalized)
+end
+
+# Graded product (⋅) for independent flows
+function g_product(a::Vector{Float64}, b::Vector{Float64})
+    return a .* b  # elementwise product
+end
+
+# Gerstenhaber bracket [ , ] for interactions/conflicts
+function g_bracket(a::Vector{Float64}, b::Vector{Float64})
+    return a .* b - b .* a  # simple antisymmetric interaction
+end
+
+# BV operator Δ: redistribution or smoothing at singular nodes
+# Controls how strongly the BV operator redistributes entropy.
+function bv_operator(a::Vector{Float64}, b::Vector{Float64}; smoothing=0.5)
+    delta = g_product(a,b) - a - b
+    return delta .* smoothing
+end
+
 ###############################################################
 #            FORWARD / BACKWARD FLOW PROPAGATION
 ###############################################################
@@ -220,6 +264,19 @@ function compute_overlap(node_dict, num_outcomes)
     end
 end
 
+# Now the overlap flow respects Gerstenhaber bracket + BV smoothing
+# Removing singularities via blow ups.
+function update_overlap(node::Node)
+    # Compute the Gerstenhaber bracket for forward/backward interactions
+    bracket_flow = g_bracket(node.entropy_fwd, node.entropy_bwd)
+    
+    # Compute BV correction
+    Δ = bv_operator(node.entropy_fwd, node.entropy_bwd)
+    
+    # Update overlap: interaction + BV correction
+    node.entropy_overlap .= bracket_flow .- Δ
+end
+
 ###############################################################
 #           CONSERVE TOTAL ENTROPY
 ###############################################################
@@ -287,11 +344,17 @@ region_fwd_ts = Dict(region => Float64[] for region in keys(region_fractions))
 region_bwd_ts = Dict(region => Float64[] for region in keys(region_fractions))
 region_ov_ts  = Dict(region => Float64[] for region in keys(region_fractions))
 
+
+
 println("Beginning simulation...")
 for t in 1:num_steps
+    println("Time step t = $t")
     # choose forward/backward participants
     active_fwd = select_active_nodes(node_dict, region_fractions)
     active_bwd = select_backward_nodes(node_dict, region_fractions, active_fwd, 0.3)
+
+    #println("Active forward nodes: ", collect(active_fwd))
+    #println("Active backward nodes: ", collect(active_bwd))
 
     propagate_flows(node_dict, edge_dict, active_fwd, :fwd, num_outcomes)
     propagate_flows(node_dict, edge_dict, active_bwd, :bwd, num_outcomes)
@@ -299,8 +362,13 @@ for t in 1:num_steps
     # combine by true Gerstenhaber bracket
     compute_overlap(node_dict, num_outcomes)
 
+    # Update overlap at this timestep
+    for node in values(node_dict)
+        update_overlap(node)
+    end
+
     # global conservation
-    conserve_total_entropy(node_dict)
+    #conserve_total_entropy(node_dict)
 
     # record
     ts_fwd, ts_bwd, ts_ov = record_region_ts(node_dict, region_fractions)
@@ -310,6 +378,11 @@ for t in 1:num_steps
         push!(region_bwd_ts[region], ts_bwd[region])
         push!(region_ov_ts[region],  ts_ov[region])
     end
+    # Optional: print summary per timestep
+    forward_sum = sum([node.entropy_fwd[t] for node in values(node_dict)])
+    backward_sum = sum([node.entropy_bwd[t] for node in values(node_dict)])
+    overlap_sum = sum([node.entropy_overlap[t] for node in values(node_dict)])
+    println("  Forward sum: $forward_sum, Backward sum: $backward_sum, Overlap sum: $overlap_sum")
 end
 
 ###############################################################
