@@ -12,6 +12,7 @@ export C0, C1, C2,
        c1_from_edgevals, c1_to_sparse, c1_commutator_bracket,
        cup_c1_c1_to_c2, delta_BV_C2_to_C1,
        derived_bracket_from_Delta,
+       derived_bracket_from_Delta_general,
        compute_BV_correction!, integrate_BV_correction!
 
 # ---------------------------
@@ -255,26 +256,31 @@ end
 derived_bracket_from_Delta(a::C1, b::C1, A_sub::SparseMatrixCSC)
 Return C1 given by (-1)^{|a|} Δ(a∪b) - ... (for C1-C1 this reduces essentially to -Δ(a∪b))
 """
-#=
+
 function derived_bracket_from_Delta(a::C1, b::C1, A_sub::SparseMatrixCSC)
     # a,b degree 1 => (-1)^1 = -1
     c2 = cup_c1_c1_to_c2(a, b)
+    # Δ: C2 -> C1
     delta = delta_BV_C2_to_C1(c2, A_sub; use_edge_weight=true)
     # sign = (-1)^1 = -1, return - delta (C1)
-    delta_neg = copy(delta)
-    delta_neg.vals .= .-delta_neg.vals
+    delta_neg = C1(delta.u, delta.v, .-delta.vals, delta.idxmap)
     return delta_neg
 end
 
 # A unified derived-bracket function that attempts types C0/C1 combos (we focus on C1-C1)
-function derived_bracket_from_Delta_general(a::Abstract, b::Abstract, A_sub::SparseMatrixCSC)
+"""
+derived_bracket_from_Delta_general(a, b, A_sub::SparseMatrixCSC)
+A unified function for calling the derived bracket based on cochain types.
+"""
+function derived_bracket_from_Delta_general(a, b, A_sub::SparseMatrixCSC)
     if isa(a, C1) && isa(b, C1)
-        return derived_bracket_from_Delta(a,b,A_sub)
+        return derived_bracket_from_Delta(a, b, A_sub)
     else
-        error("Derived bracket generalization not implemented for these types in this module.")
+        # Placeholder for other required BV operations, e.g., {C0, C1}
+        error("Derived bracket generalization implemented only for C1-C1 in this module.")
     end
 end
-=#
+
 # ---------------------------
 # Convert C1 into node-vector correction via divergence-like map:
 # Map C1 (edges oriented u->v) into node vector of length m
@@ -860,4 +866,142 @@ function reconstruct_coords(original_pos::Union{Nothing,Dict{Int,Vector{Float64}
     return coords
 end
 
+
+# Blowdown local to global consistency mgmt.
+"""
+EntropySheaf
+
+A conceptual structure capturing the local-to-global consistency required for
+Hironaka-style resolution of singularities (exceptional entropy flows).
+
+- sections: Stores the local (C0, C1) data for each neighborhood.
+- node_to_section_key: Maps a global node index to the key(s) of the local section(s)
+  it belongs to.
+- local_neighborhoods: The sets U_i (e.g., node i and its radius=1 neighbors).
+"""
+struct EntropySheaf
+    # Map key (e.g., node index 'i') to the local cochains over N(i)
+    sections::Dict{Int, Tuple{C0, C1}}
+
+    # Map global node index -> list of local section keys it belongs to
+    node_to_section_key::Dict{Int, Vector{Int}}
+
+    # The actual sets U_i
+    local_neighborhoods::Dict{Int, Vector{Int}}
+end
+
+"""
+build_entropy_sheaf(p::C0, flux::C1, A_sub::SparseMatrixCSC; radius::Int=1)
+
+Constructs the initial sections of the Sheaf based on the active graph state.
+The section S(U_i) over neighborhood U_i is the subset of p and flux restricted to U_i.
+"""
+function build_entropy_sheaf(p::C0, flux::C1, A_sub::SparseMatrixCSC; radius::Int=1)
+    m = length(p.vals)
+    neigh_maps = Dict{Int, Vector{Int}}()
+    
+    # 1. Determine local neighborhoods (U_i)
+    # Reuse neighborhood logic from local_jacobian_scores
+    
+    # Build adjacency list first (for radius=1)
+    adj = Dict{Int, Set{Int}}()
+    for i in 1:m
+        adj[i] = Set{Int}([i])
+    end
+    rows, cols, _ = findnz(A_sub)
+    for (r,c) in zip(rows, cols)
+        push!(adj[r], c)
+        push!(adj[c], r)
+    end
+
+    # Expand to radius (simplified for immediate use: only radius=1)
+    for i in 1:m
+        U_i = sort(collect(adj[i]))
+        neigh_maps[i] = U_i
+    end
+    
+    # 2. Extract local sections S(U_i)
+    sections = Dict{Int, Tuple{C0, C1}}()
+    node_to_section_key = Dict{Int, Vector{Int}}()
+    
+    for i in 1:m
+        section_nodes = neigh_maps[i]
+        
+        # Local C0 (node values)
+        p_local = C0(p.vals[section_nodes])
+        
+        # Local C1 (edge values)
+        u_local = Int[]; v_local = Int[]; vals_local = Float64[]; idx_local = Dict{Tuple{Int,Int},Int}()
+        k_local = 0
+        
+        # Filter global C1 to edges (u,v) where both u and v are in the section
+        for k in eachindex(flux.vals)
+            u_global = flux.u[k]
+            v_global = flux.v[k]
+            
+            # Check if both endpoints are in the current section
+            if u_global in section_nodes && v_global in section_nodes
+                # Use global indices for the section map keys for simplicity
+                k_local += 1
+                push!(u_local, u_global)
+                push!(v_local, v_global)
+                push!(vals_local, flux.vals[k])
+                idx_local[(u_global, v_global)] = k_local
+            end
+        end
+        c1_local = C1(u_local, v_local, vals_local, idx_local)
+        
+        sections[i] = (p_local, c1_local)
+
+        # Update node_to_section_key
+        for node in section_nodes
+            push!(get!(node_to_section_key, node, Int[]), i)
+        end
+    end
+
+    return EntropySheaf(sections, node_to_section_key, neigh_maps)
+end
+
+"""
+resolve_and_check_consistency(S::EntropySheaf, p_before::Vector{Float64},
+                              keep_mask::Vector{Bool}, exceptional_sets::Vector{Vector{Int}})
+
+This function conceptually performs the local projection (blow-down) and checks
+the global consistency of the entropy field.
+
+It uses the existing blowdown functions (assuming they are run externally)
+and the provided discrepancy function for the *crepant check*.
+"""
+function resolve_and_check_consistency(S::EntropySheaf, p_before::Vector{Float64},
+                                     keep_mask::Vector{Bool}, exceptional_sets::Vector{Vector{Int}},
+                                     entropy_fn::Function = node_entropy)
+    
+    # 1. Simulate the blow-down/projection π: S(U_i) -> S(U_i \ E_i)
+    # The result of the blow-down (p_new) is the projected global section.
+    p_new_vals = p_before[keep_mask]
+    
+    # 2. Calculate the global entropy discrepancy (The Crepant Check)
+    # The discrepancy measures how "non-crepant" (non-consistent) the blow-down was
+    # regarding the total entropy flowing through the collapsed exceptional sets.
+    
+    # NOTE: The definition of compute_entropy_discrepancy in the previous response
+    # requires an external definition of which new node corresponds to which old set.
+    # We simplify here by only passing the entropy function.
+    
+    # Placeholder for the discrepancy function output
+    # This result should be NEAR ZERO for a consistent/crepant blow-down.
+    discrepancy = compute_entropy_discrepancy(p_before, p_new_vals,
+                                             exceptional_sets;
+                                             entropy_fn = entropy_fn)
+
+    # 3. Assessment
+    avg_discrepancy = sum(abs.(discrepancy)) / length(discrepancy)
+    
+    # The sheaf structure informs the Hironaka procedure: 
+    # If avg_discrepancy is high, the center of the blow-up (the exceptional nodes) 
+    # was poorly chosen relative to the global BV structure, meaning the 99%
+    # of "cool" entropy flows were actually essential for local consistency.
+    
+    return avg_discrepancy
+end
 end # module EntropyBV

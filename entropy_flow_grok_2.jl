@@ -660,10 +660,17 @@ function bv_resolve_top_entropy!(
     try
         flux = EntropyBV.c1_from_edgevals(edge_u, edge_v, idxmap, flux_vals)
         perturb = EntropyBV.c1_from_edgevals(edge_u, edge_v, idxmap, perturb_vals)
-        bracket = EntropyBV.c1_commutator_bracket(flux, perturb, m)
+        # Linear
+        #bracket = EntropyBV.c1_commutator_bracket(flux, perturb, m)
+        
+        # Use the BV-derived bracket: {flux, flux} = -Δ(flux ∪ flux)
+        # This uses the C2 paths to calculate the correction.
+        # We use {flux, flux} as the most direct homological probe of the flux field's self-interaction.
+        # BV Operator
+        bracket = EntropyBV.derived_bracket_from_Delta_general(flux, flux, A_sub)
 
         # Safe node correction — returns Vector{Float64}
-        corr_vec = EntropyBV.c1_to_node_correction(bracket, m; convention=:in_minus_out)
+        #corr_vec = EntropyBV.c1_to_node_correction(bracket, m; convention=:in_minus_out)
         if !(corr_vec isa AbstractVector{<:Real})
             @warn "c1_to_node_correction returned wrong type, using zero correction"
             corr_vec = zeros(m)
@@ -696,7 +703,7 @@ end
 # ==============================================================
 # 6. SIMULATION & SBI
 # ==============================================================
-function simulate_entropy_p(params::EntropyPriorParams; steps=8000, dt=1e-4)
+function simulate_entropy_p(params::EntropyPriorParams; steps=100, dt=1e-4)
     n = length(res.p)
     π = make_parameterized_prior(res.nodes, params)
     p = fill(1.0/n, n) .+ 1e-8*randn(n); p ./= sum(p)
@@ -731,11 +738,15 @@ function simulate_entropy_p(params::EntropyPriorParams; steps=8000, dt=1e-4)
             end
             prev_H = current_H
         end
+
+        if it % max(1, steps÷10) == 0
+            @info "step $it | H[p] = $(round(shannon_entropy(p), digits=6)) | min(p) = $(minimum(p))"
+        end
     end
     p_final = p
     top = top_entropy_nodes(p_final; frac=0.01)
 
-
+    
     outcomes = simulate_outcomes(p_final, res.nodes; noise=params.noise)
     return (p=p_final, top_entropy = top, outcomes=outcomes)
 end
@@ -1362,9 +1373,9 @@ if abspath(PROGRAM_FILE) == @__FILE__
     # input arguments. In a parent function, you can create a handle to a 
     # nested function that contains the data necessary to run the nested function.
     if !isfile("sbi_dataset.bson") || filesize("sbi_dataset.bson") < 10_000_000
-        @info "Generating 10,000 simulations for SBI (this takes 1–6 hours)..."
+        @info "Generating 30 simulations for SBI (this takes 1–6 hours)..."
         # will use global res parameters such as res.nodes, res.edges res.p res.A etc.
-        generate_sbi_dataset(60; path="sbi_dataset.bson")
+        generate_sbi_dataset(30; path="sbi_dataset.bson")
     else
         @info "SBI dataset already exists → skipping generation"
     end
