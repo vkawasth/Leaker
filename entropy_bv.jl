@@ -7,14 +7,6 @@ module EntropyBV
 
 using SparseArrays, LinearAlgebra
 
-export C0, C1, C2,
-       build_active_subgraph, build_edge_index,
-       c1_from_edgevals, c1_to_sparse, c1_commutator_bracket,
-       cup_c1_c1_to_c2, delta_BV_C2_to_C1,
-       derived_bracket_from_Delta,
-       derived_bracket_from_Delta_general,
-       compute_BV_correction!, integrate_BV_correction!
-
 # ---------------------------
 # Types: compact, memory-friendly
 # ---------------------------
@@ -51,6 +43,49 @@ struct C2
     vals::Vector{Float64}
     idxmap::Dict{Tuple{Int,Int,Int},Int}
 end
+
+# Blowdown local to global consistency mgmt.
+"""
+EntropySheaf
+
+A conceptual structure capturing the local-to-global consistency required for
+Hironaka-style resolution of singularities (exceptional entropy flows).
+
+- sections: Stores the local (C0, C1) data for each neighborhood.
+- node_to_section_key: Maps a global node index to the key(s) of the local section(s)
+  it belongs to.
+- local_neighborhoods: The sets U_i (e.g., node i and its radius=1 neighbors).
+"""
+struct EntropySheaf
+    # Map key (e.g., node index 'i') to the local cochains over N(i)
+    sections::Dict{Int, Tuple{C0, C1}}
+
+    # Map global node index -> list of local section keys it belongs to
+    node_to_section_key::Dict{Int, Vector{Int}}
+
+    # The actual sets U_i
+    local_neighborhoods::Dict{Int, Vector{Int}}
+end
+
+
+export C0, C1, C2,
+       build_active_subgraph, build_edge_index,
+       c1_from_edgevals, c1_to_sparse, c1_commutator_bracket,
+       cup_c1_c1_to_c2, delta_BV_C2_to_C1,
+       derived_bracket_from_Delta,
+       derived_bracket_from_Delta_general,
+       c1_to_node_correction,
+       compute_BV_correction!, integrate_BV_correction!,
+       # Blow-down exports
+       select_exceptional_nodes, build_blowdown_mask,
+       blowdown_C1, blowdown_C2, blowdown_graph, perform_blowdown,
+       linearize_BV_kernel, local_jacobian_scores,
+       node_entropy, compute_entropy_discrepancy,
+       compact_indices, remap_C1_C2_to_compact
+       # Sheaf exports (local to global entropy bondary aross regions mgmt.)
+       #EntropySheaf, build_entropy_sheaf, resolve_and_check_consistency,
+       #spectral_embedding, reconstruct_coords
+
 
 # ---------------------------
 # Build active subgraph utilities
@@ -149,39 +184,57 @@ end
 # Cup: C1 ∪ C1 -> C2 (paths of length 2)
 # For each oriented pair e1: u->v and e2: v->w produce path (u,v,w) with val = val1 * val2
 # ---------------------------
+
+# Complexity O(ne + sum_outdeg^2) in worst case but practically O(ne + number of length-2 paths).
 """
-cup_c1_c1_to_c2(a::C1, b::C1)
-Return C2 representing oriented length-2 paths.
-Complexity O(ne + sum_outdeg^2) in worst case but practically O(ne + number of length-2 paths).
+cup_c1_c1_to_c2(a::C1, b::C1, m::Int)
+
+The cup product of two 1-cochains (edges), yielding a 2-cochain (paths of length 2).
+It is defined by (a ∪ b)_{i->j->k} = a_{i->j} * b_{j->k}.
+m is the size of the active node set (m x m).
 """
-function cup_c1_c1_to_c2(a::C1, b::C1)
-    # Build outgoing index lists for a and b keyed by middle node v
-    m = maximum(vcat(a.u, a.v, b.u, b.v))  # local m guess; not strictly needed
-    # Outgoing edges from node x in a: edges_a_out[x] = list of indices k where a.u[k] == x
+function cup_c1_c1_to_c2(a::C1, b::C1, m::Int)
+    # Use the explicit size m for allocation, which avoids bounds errors 
+    # if the max index in C1 is less than m (e.g., node m has no active edges)
+    
+    # Outgoing edges from node x in a: edges_a_out[x] = list of indices k where a.v[k] == x
     edges_a_out = Vector{Vector{Int}}(undef, m)
-    edges_b_out = Vector{Vector{Int}}(undef, m)
+    # Incoming edges to node x in b: edges_b_in[x] = list of indices k where b.u[k] == x
+    edges_b_in = Vector{Vector{Int}}(undef, m)
+    
     for i in 1:m
         edges_a_out[i] = Int[]
-        edges_b_out[i] = Int[]
+        edges_b_in[i] = Int[]
     end
-    for (k,mid) in enumerate(a.v)
-        push!(edges_a_out[mid], k)
+    
+    # 1. Map: edge end (a.v) -> index of edge in a
+    for (k, mid) in enumerate(a.v)
+        # Check bounds: mid must be 1..m
+        if 1 <= mid <= m
+            push!(edges_a_out[mid], k)
+        end
     end
-    for (k,mid) in enumerate(b.u)
-        push!(edges_b_out[mid], k)  # note: b.u is source of b (middle must match)
+    
+    # 2. Map: edge start (b.u) -> index of edge in b
+    for (k, mid) in enumerate(b.u)
+        # Check bounds: mid must be 1..m
+        if 1 <= mid <= m
+            push!(edges_b_in[mid], k)
+        end
     end
 
-    # Now iterate middle nodes where both lists non-empty
+    # 3. Combine: Iterate middle nodes where both lists non-empty
     u_list = Int[]; v_list = Int[]; w_list = Int[]; vals = Float64[]
     idxmap = Dict{Tuple{Int,Int,Int},Int}()
     kcount = 0
     for mid in 1:m
         list1 = edges_a_out[mid]
-        list2 = edges_b_out[mid]
+        list2 = edges_b_in[mid]
+        
         if isempty(list1) || isempty(list2)
             continue
         end
-        # combine
+        
         for e1 in list1
             u = a.u[e1]; val1 = a.vals[e1]
             for e2 in list2
@@ -203,29 +256,48 @@ end
 # - If (u,w) not an existing oriented edge, we still optionally create it (here we create it to keep closure)
 # ---------------------------
 """
-delta_BV_C2_to_C1(c2::C2, A_sub::SparseMatrixCSC; use_edge_weight=true)
-Returns C1. If use_edge_weight, contributions multiplied by A_sub[u,w] (0 if absent).
-If you prefer to always create (u->w) even if not in A_sub, pass use_edge_weight=false.
+delta_BV_C2_to_C1(c2::C2, A_sub::SparseMatrixCSC; use_edge_weight::Bool=true)
+
+The Batalin-Vilkovisky (BV) Delta operator: C2 -> C1.
+It contracts the 2-cochain (path u->v->w) to a 1-cochain (edge u->w) by multiplying 
+by the edge weight w_{u->w} and summing the contributions from all intermediate nodes v.
 """
 function delta_BV_C2_to_C1(c2::C2, A_sub::SparseMatrixCSC; use_edge_weight::Bool=true)
+    m = size(A_sub, 1) # Get the local dimension for safety checks
+    
     # Build accumulator dict for oriented edge -> value
     acc = Dict{Tuple{Int,Int},Float64}()
+    
+    # Iterate over all 2-cochains (u->v->w paths)
     for (k, (u,v,w)) in enumerate(zip(c2.u, c2.v, c2.w))
         val = c2.vals[k]
+        
+        # CRITICAL SAFETY CHECK: Ensure indices are within the local active range
+        if !(1 <= u <= m) || !(1 <= w <= m)
+            # This path is outside the active subgraph bounds, skip it
+            continue
+        end
+
         if use_edge_weight
-            # check adjacency u->w
-            wuw = getindex(A_sub, u, w)
+            # Check for existing edge u->w in the active subgraph
+            # This access is safe because u and w are now guaranteed to be <= m
+            wuw = getindex(A_sub, u, w) 
+            
             if wuw == 0.0
+                # If the collapsed edge does not exist in A_sub, the contribution is zero
                 continue
             end
             contrib = val * wuw
         else
             contrib = val
         end
+        
+        # Accumulate the contribution for the resulting 1-cochain (u->w)
         key = (u, w)
         acc[key] = get(acc, key, 0.0) + contrib
     end
-    # unpack to arrays
+    
+    # unpack the accumulator dict into a C1 cochain
     ne = length(acc)
     u_arr = Vector{Int}(undef, ne); v_arr = Vector{Int}(undef, ne); vals = Vector{Float64}(undef, ne)
     idxmap = Dict{Tuple{Int,Int},Int}()
@@ -238,6 +310,9 @@ function delta_BV_C2_to_C1(c2::C2, A_sub::SparseMatrixCSC; use_edge_weight::Bool
     return C1(u_arr, v_arr, vals, idxmap)
 end
 
+# ==============================================================================
+# 4. BV DERIVED BRACKET: {A, B}Δ = (-1)^|A| * Δ(A ∪ B)
+# ==============================================================================
 # ---------------------------
 # Derived Gerstenhaber bracket from Δ:
 # {a,b} = (-1)^{|a|} ( Δ(a∪b) - (Δ a) ∪ b - (-1)^{|a|} a ∪ (Δ b) )
@@ -254,18 +329,31 @@ end
 # ---------------------------
 """
 derived_bracket_from_Delta(a::C1, b::C1, A_sub::SparseMatrixCSC)
-Return C1 given by (-1)^{|a|} Δ(a∪b) - ... (for C1-C1 this reduces essentially to -Δ(a∪b))
-"""
 
+Computes the derived bracket {a, b}Δ using the BV operator Δ.
+For C1-C1 (degree 1), the result is -Δ(a ∪ b).
+"""
 function derived_bracket_from_Delta(a::C1, b::C1, A_sub::SparseMatrixCSC)
-    # a,b degree 1 => (-1)^1 = -1
-    c2 = cup_c1_c1_to_c2(a, b)
-    # Δ: C2 -> C1
+    m = size(A_sub, 1) # Get the current active set size m
+    
+    # 1. Cup Product: C1 ⊗ C1 -> C2
+    # NOTE: We use the m parameter in the function call now!
+    c2 = cup_c1_c1_to_c2(a, b, m) 
+    
+    # 2. BV Operator: C2 -> C1
+    # This is the contraction step that uses A_sub weights
     delta = delta_BV_C2_to_C1(c2, A_sub; use_edge_weight=true)
-    # sign = (-1)^1 = -1, return - delta (C1)
+    
+    # 3. Sign Correction: (-1)^|A| = (-1)^1 = -1
+    # We negate the resulting C1 cochain.
     delta_neg = C1(delta.u, delta.v, .-delta.vals, delta.idxmap)
     return delta_neg
 end
+
+"""
+derived_bracket_from_Delta(a::C1, b::C1, A_sub::SparseMatrixCSC)
+Return C1 given by (-1)^{|a|} Δ(a∪b) - ... (for C1-C1 this reduces essentially to -Δ(a∪b))
+"""
 
 # A unified derived-bracket function that attempts types C0/C1 combos (we focus on C1-C1)
 """
@@ -307,27 +395,6 @@ function c1_to_node_correction(c::C1, m::Int; convention=:in_minus_out)
     end
     return correction::Vector{Float64}  # force return type
 end
-#=
-function c1_to_node_correction(c::C1, m::Int; convention::Symbol=:in_minus_out)
-    out = zeros(Float64, m)
-    if convention == :in_minus_out
-        for k in 1:length(c.vals)
-            uu = c.u[k]; vv = c.v[k]; val = c.vals[k]
-            out[vv] += val
-            out[uu] -= val
-        end
-    elseif convention == :in_plus_out
-        for k in 1:length(c.vals)
-            uu = c.u[k]; vv = c.v[k]; val = c.vals[k]
-            out[vv] += val
-            out[uu] += val
-        end
-    else
-        error("Unknown convention")
-    end
-    return C0(out)
-end
-=#
 
 # ---------------------------
 # High-level: compute BV-derived correction vector for p (C0) using the current flux as C1
@@ -424,7 +491,11 @@ if abspath(PROGRAM_FILE) == @__FILE__
 end
 
 #Force method replacement
+# Julia has issues about retaking functions.
 #Base.delete_method.(methods(EntropyBV.c1_to_node_correction))
+#Base.delete_method.(methods(EntropyBV.cup_c1_c1_to_c2))
+#Base.delete_method.(methods(EntropyBV.delta_BV_C2_to_C1))
+
 #@info "c1_to_node_correction RELOADED — returns Vector{Float64}"
 
 #############################
@@ -866,29 +937,6 @@ function reconstruct_coords(original_pos::Union{Nothing,Dict{Int,Vector{Float64}
     return coords
 end
 
-
-# Blowdown local to global consistency mgmt.
-"""
-EntropySheaf
-
-A conceptual structure capturing the local-to-global consistency required for
-Hironaka-style resolution of singularities (exceptional entropy flows).
-
-- sections: Stores the local (C0, C1) data for each neighborhood.
-- node_to_section_key: Maps a global node index to the key(s) of the local section(s)
-  it belongs to.
-- local_neighborhoods: The sets U_i (e.g., node i and its radius=1 neighbors).
-"""
-struct EntropySheaf
-    # Map key (e.g., node index 'i') to the local cochains over N(i)
-    sections::Dict{Int, Tuple{C0, C1}}
-
-    # Map global node index -> list of local section keys it belongs to
-    node_to_section_key::Dict{Int, Vector{Int}}
-
-    # The actual sets U_i
-    local_neighborhoods::Dict{Int, Vector{Int}}
-end
 
 """
 build_entropy_sheaf(p::C0, flux::C1, A_sub::SparseMatrixCSC; radius::Int=1)

@@ -1,6 +1,7 @@
 # entropy_flow_final.jl
 # Works on Julia 1.8–1.10, no extra packages except Arpack & LinearMaps (install if missing)
 # Tested on 3.5M nodes / 5.3M edges → runs in seconds per 1000 steps
+using Revise
 include("entropy_bv.jl")
 using .EntropyBV
 
@@ -660,13 +661,14 @@ function bv_resolve_top_entropy!(
     try
         flux = EntropyBV.c1_from_edgevals(edge_u, edge_v, idxmap, flux_vals)
         perturb = EntropyBV.c1_from_edgevals(edge_u, edge_v, idxmap, perturb_vals)
-        # Linear
+        # Linear -- Use this for broad non loopy regions of brain/geometries
         #bracket = EntropyBV.c1_commutator_bracket(flux, perturb, m)
         
         # Use the BV-derived bracket: {flux, flux} = -Δ(flux ∪ flux)
         # This uses the C2 paths to calculate the correction.
         # We use {flux, flux} as the most direct homological probe of the flux field's self-interaction.
-        # BV Operator
+        
+        # BV Operator -- Use this for hippocampus loopy dense interconnected graphs
         bracket = EntropyBV.derived_bracket_from_Delta_general(flux, flux, A_sub)
 
         # Safe node correction — returns Vector{Float64}
@@ -1375,7 +1377,7 @@ if abspath(PROGRAM_FILE) == @__FILE__
     println("SINGLE SIMULATION DONE — NOW GENERATING SBI DATASET")
     println("="^60)
 
-    #=
+    
     # 2. THIS IS WHERE generate_sbi_dataset IS CALLED
     # Warning for C++ creators coming to Julia, Python etc...
     # Nested functions can use variables that are not explicitly passed as 
@@ -1394,5 +1396,5 @@ if abspath(PROGRAM_FILE) == @__FILE__
     println("   • Full SBI dataset (sbi_dataset.bson)")
     println("   • Ready for neural posterior training")
     println("\nNext step: run the training script (or add it here)!")
-    =#
+    
 end
