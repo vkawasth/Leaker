@@ -195,61 +195,90 @@ end
 function simulate_nodes_with_summary!(nodes::Vector{Node}, stimuli::Vector{Vector{Float32}}, threshold::Float32; top_pos=10, top_neg=20, homogenize_each_step=false)
     n_nodes = length(nodes)
     n_steps = length(stimuli)
-    
+
     # History arrays
-    category_history = Array{Int8}(undef, n_nodes, n_steps)
-    summaries = Vector{Dict{String, Any}}(undef, n_steps)
+    category_history_threshold = Array{Int8}(undef, n_nodes, n_steps)
+    summaries_threshold = Vector{Dict{String, Any}}(undef, n_steps)
+    
     top_nodes_history = Vector{Dict{String, Vector{Int}}}(undef, n_steps)
+    category_topN_history = Array{Int8}(undef, n_nodes, n_steps)
     
     for t in 1:n_steps
         stimulus = stimuli[t]
         
-        # --- Step 1: Compute all responses once ---
+        # --- Step 1: Compute responses ---
         responses = zeros(Float32, n_nodes)
         @threads for i in 1:n_nodes
             responses[i] = respond!(nodes[i], stimulus)
         end
         
-        # --- Step 2: Determine top positive and negative nodes ---
-        sorted_indices = sortperm(responses, rev=true)
-        positive_ids = sorted_indices[1:min(top_pos, n_nodes)]
-        negative_ids = sorted_indices[end-min(top_neg, n_nodes)+1:end]
-        neutral_ids = setdiff(1:n_nodes, union(positive_ids, negative_ids))
-        
-        # --- Step 3: Categorize all nodes ---
-        # Thread-safe assignment
+        # --------------------------
+        # Threshold-based categorization
+        # --------------------------
+        positives_thresh, negatives_thresh, neutrals_thresh = Int[], Int[], Int[]
         for i in 1:n_nodes
-            if i in positive_ids
-                category_history[i, t] = 1
-            elseif i in negative_ids
-                category_history[i, t] = -1
+            if responses[i] > threshold
+                push!(positives_thresh, i)
+            elseif responses[i] < -threshold
+                push!(negatives_thresh, i)
             else
-                category_history[i, t] = 0
+                push!(neutrals_thresh, i)
             end
         end
-        
-        # --- Step 4: Optional homogenization ---
-        if homogenize_each_step
-            homogenize(nodes, positive_ids)
-            homogenize(nodes, negative_ids)
-            homogenize(nodes, neutral_ids)
+
+        # Fill category history
+        category_history_threshold[:, t] .= 0
+        category_history_threshold[positives_thresh, t] .= 1
+        category_history_threshold[negatives_thresh, t] .= -1
+
+        # Summary
+        summaries_threshold[t] = summarize_step(nodes, positives_thresh, negatives_thresh, neutrals_thresh)
+
+        # --------------------------
+        # Top-N loudest nodes categorization
+        # --------------------------
+        positives_topN, negatives_topN, neutrals_topN = Int[], Int[], Int[]
+        if top_pos !== nothing || top_neg !== nothing
+            sorted_indices = sortperm(responses, rev=true)
+            
+            if top_pos !== nothing
+                positives_topN = sorted_indices[1:min(top_pos, n_nodes)]
+            end
+            if top_neg !== nothing
+                negatives_topN = sorted_indices[end-min(top_neg, n_nodes)+1:end]
+            end
+            all_ids = collect(1:n_nodes)
+            neutrals_topN = setdiff(all_ids, union(positives_topN, negatives_topN))
         end
-        
-        # --- Step 5: Save top nodes ---
+
+        # Fill Top-N category history
+        category_topN_history[:, t] .= 0
+        category_topN_history[positives_topN, t] .= 1
+        category_topN_history[negatives_topN, t] .= -1
+
+        # Save top nodes info
         top_nodes_history[t] = Dict(
-            "positive" => positive_ids,
-            "negative" => negative_ids,
-            "neutral" => neutral_ids
+            "positive_topN" => positives_topN,
+            "negative_topN" => negatives_topN,
+            "neutral_topN"  => neutrals_topN,
+            "positive_thresh" => positives_thresh,
+            "negative_thresh" => negatives_thresh,
+            "neutral_thresh"  => neutrals_thresh
         )
-        
-        # --- Step 6: Collect summary ---
-        summaries[t] = summarize_step(nodes, positive_ids, negative_ids, neutral_ids)
+
+        # Optional homogenization
+        if homogenize_each_step
+            homogenize(nodes, positives_thresh)
+            homogenize(nodes, negatives_thresh)
+            homogenize(nodes, neutrals_thresh)
+        end
     end
-    
-    return category_history, summaries, top_nodes_history
+
+    return category_history_threshold, summaries_threshold, category_topN_history, top_nodes_history
 end
 # Calls get_top_nodes respond, comment out respond on line 268
 # only for debugging related to top nodes.
+#=
 function simulate_nodes_with_summary!(nodes::Vector{Node}, stimuli::Vector{Vector{Float32}}, threshold::Float32; top_pos=10, top_neg=20, homogenize_each_step=false)
     n_nodes = length(nodes)
     n_steps = length(stimuli)
@@ -279,15 +308,9 @@ function simulate_nodes_with_summary!(nodes::Vector{Node}, stimuli::Vector{Vecto
         end
         
         # Record category for this step
-        for id in positives
-            category_history[id, t] = 1
-        end
-        for id in negatives
-            category_history[id, t] = -1
-        end
-        for id in neutrals
-            category_history[id, t] = 0
-        end
+        category_history[:, t] .= 0                 # default neutral
+        category_history[positive_ids, t] .= 1
+        category_history[negative_ids, t] .= -1
         
         if homogenize_each_step
             homogenize(nodes, positives)
@@ -303,11 +326,12 @@ function simulate_nodes_with_summary!(nodes::Vector{Node}, stimuli::Vector{Vecto
         )
 
         # Collect summary for this stimulus
-        summaries[t] = summarize_step(nodes, positives, negatives, neutrals)
+        summaries[t] = summarize_step(nodes, positive_ids, negative_ids, neutral_ids)
     end
     
     return category_history, summaries, top_nodes_history
 end
+=#
 ## non multi stimulus simulation for debugging only
 function simulate_nodes(nodes::Vector{Node}, stimuli::Vector{Vector{Float32}}, threshold::Float32; homogenize_each_step=false)
     n_nodes = length(nodes)
@@ -340,6 +364,31 @@ function simulate_nodes(nodes::Vector{Node}, stimuli::Vector{Vector{Float32}}, t
     return category_history, summaries
 end
 
+function print_step_summary(category_hist_thresh::Array{Int8,2},
+    category_hist_topN::Array{Int8,2},
+    top_nodes_hist::Vector{Dict{String, Vector{Int}}})
+    n_steps = size(category_hist_thresh, 2)
+    for t in 1:n_steps
+        # --- Threshold counts ---
+        pos_thresh = count(category_hist_thresh[:, t] .== 1)
+        neg_thresh = count(category_hist_thresh[:, t] .== -1)
+        neut_thresh = count(category_hist_thresh[:, t] .== 0)
+
+        # --- Top-N counts ---
+        pos_topN = count(category_hist_topN[:, t] .== 1)
+        neg_topN = count(category_hist_topN[:, t] .== -1)
+        neut_topN = count(category_hist_topN[:, t] .== 0)
+
+        println("=== Step $t ===")
+        println("Threshold mode:  Positive=$pos_thresh, Negative=$neg_thresh, Neutral=$neut_thresh")
+        println("Top-N mode:      Positive=$pos_topN, Negative=$neg_topN, Neutral=$neut_topN")
+
+        # Optional: print top 10 node IDs for each category (Top-N)
+        println("Top positive nodes (Top-N): ", top_nodes_hist[t]["positive_topN"][1:min(10, end)])
+        println("Top negative nodes (Top-N): ", top_nodes_hist[t]["negative_topN"][1:min(10, end)])
+        println()
+    end
+end
 # ===========================
 # 8. Example Usage
 # ===========================
@@ -352,27 +401,9 @@ threshold = 1.0f0
 
 # Run simulation
 # We get top nodes entering leaving stimulus.
-category_history, summaries, top_nodes_history = simulate_nodes_with_summary!(nodes, stimuli, threshold, top_pos=10, top_neg=20, homogenize_each_step=true)
+category_history, summaries, category_hist_topN, top_nodes_history = simulate_nodes_with_summary!(nodes, stimuli, threshold, top_pos=10, top_neg=20, homogenize_each_step=true)
 
 # Get top responding nodes
 #top_pos_nodes, top_neg_nodes, neutral_nodes = get_response_subsets(nodes, stimuli; top_pos=10, top_neg=20)
+print_step_summary(category_history, category_hist_topN, top_nodes_history)
 
-#println("Top positive nodes (loudest responses): ", top_pos_nodes)
-#println("Top negative nodes (strongest negative responses): ", top_neg_nodes)
-#println("Number of neutral / remaining nodes: ", length(neutral_nodes))
-
-println("Top positive nodes at step 1: ", top_nodes_history[1]["positive"])
-println("Top negative nodes at step 1: ", top_nodes_history[1]["negative"])
-
-
-# Quick stats for final step
-final_step = size(category_history, 2)
-println("Final step category counts:")
-println("Positive: ", count(category_history[:, final_step] .== 1))
-println("Negative: ", count(category_history[:, final_step] .== -1))
-println("Neutral: ", count(category_history[:, final_step] .== 0))
-
-# Print summary for each stimulus
-for t in 1:length(stimuli)
-    println("Stimulus $t summary: ", summaries[t])
-end
