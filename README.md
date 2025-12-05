@@ -25,6 +25,7 @@ Final step category counts:
 Positive: 0
 Negative: 0
 Neutral: 3500000
+
 Stimulus 1 summary: Dict{String, Any}("positive_max" => 0.0f0, "neutral_max" => 0.0f0, "neutral_mean" => 0.0f0, "negative_mean" => 0.0f0, "negative_max" => 0.0f0, "positive_min" => 0.0f0, "negative_count" => 0, "positive_count" => 0, "negative_min" => 0.0f0, "neutral_count" => 0, "positive_mean" => 0.0f0, "neutral_min" => 0.0f0)
 Stimulus 2 summary: Dict{String, Any}("positive_max" => 0.0f0, "neutral_max" => 0.0f0, "neutral_mean" => 0.0f0, "negative_mean" => 0.0f0, "negative_max" => 0.0f0, "positive_min" => 0.0f0, "negative_count" => 0, "positive_count" => 0, "negative_min" => 0.0f0, "neutral_count" => 0, "positive_mean" => 0.0f0, "neutral_min" => 0.0f0)
 Stimulus 3 summary: Dict{String, Any}("positive_max" => 0.0f0, "neutral_max" => 0.0f0, "neutral_mean" => 0.0f0, "negative_mean" => 0.0f0, "negative_max" => 0.0f0, "positive_min" => 0.0f0, "negative_count" => 0, "positive_count" => 0, "negative_min" => 0.0f0, "neutral_count" => 0, "positive_mean" => 0.0f0, "neutral_min" => 0.0f0)
