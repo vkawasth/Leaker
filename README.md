@@ -20,14 +20,6 @@ This work develops a noncommutative algebraic framework connecting geometry and 
 Nodes get characterized into sets as outcome of stimulus across regions using julia sets of functions for each node.
 
 Top positive nodes at step 1: [3045630, 2917843, 3089964, 1602048, 2079787, 664014, 2445504, 2494587, 293607, 2941518]
-Top negative nodes at step 1: [151946, 2158242, 3064095, 2642764, 350760, 2718645, 695457, 2464571, 1787631, 1697961, 2495710, 2700850, 2344967, 783073, 3178753, 32807, 1608161, 3267477, 253556, 1623958]
-Final step category counts:
-Positive: 0
-Negative: 0
-Neutral: 3500000
 
-Stimulus 1 summary: Dict{String, Any}("positive_max" => 0.0f0, "neutral_max" => 0.0f0, "neutral_mean" => 0.0f0, "negative_mean" => 0.0f0, "negative_max" => 0.0f0, "positive_min" => 0.0f0, "negative_count" => 0, "positive_count" => 0, "negative_min" => 0.0f0, "neutral_count" => 0, "positive_mean" => 0.0f0, "neutral_min" => 0.0f0)
-Stimulus 2 summary: Dict{String, Any}("positive_max" => 0.0f0, "neutral_max" => 0.0f0, "neutral_mean" => 0.0f0, "negative_mean" => 0.0f0, "negative_max" => 0.0f0, "positive_min" => 0.0f0, "negative_count" => 0, "positive_count" => 0, "negative_min" => 0.0f0, "neutral_count" => 0, "positive_mean" => 0.0f0, "neutral_min" => 0.0f0)
-Stimulus 3 summary: Dict{String, Any}("positive_max" => 0.0f0, "neutral_max" => 0.0f0, "neutral_mean" => 0.0f0, "negative_mean" => 0.0f0, "negative_max" => 0.0f0, "positive_min" => 0.0f0, "negative_count" => 0, "positive_count" => 0, "negative_min" => 0.0f0, "neutral_count" => 0, "positive_mean" => 0.0f0, "neutral_min" => 0.0f0)
-Stimulus 4 summary: Dict{String, Any}("positive_max" => 0.0f0, "neutral_max" => 0.0f0, "neutral_mean" => 0.0f0, "negative_mean" => 0.0f0, "negative_max" => 0.0f0, "positive_min" => 0.0f0, "negative_count" => 0, "positive_count" => 0, "negative_min" => 0.0f0, "neutral_count" => 0, "positive_mean" => 0.0f0, "neutral_min" => 0.0f0)
-Stimulus 5 summary: Dict{String, Any}("positive_max" => 0.0f0, "neutral_max" => 0.0f0, "neutral_mean" => 0.0f0, "negative_mean" => 0.0f0, "negative_max" => 0.0f0, "positive_min" => 0.0f0, "negative_count" => 0, "positive_count" => 0, "negative_min" => 0.0f0, "neutral_count" => 0, "positive_mean" => 0.0f0, "neutral_min" => 0.0f0)
+Top negative nodes at step 1: [151946, 2158242, 3064095, 2642764, 350760, 2718645, 695457, 2464571, 1787631, 1697961, 2495710, 2700850, 2344967, 783073, 3178753, 32807, 1608161, 3267477, 253556, 1623958]
+
