@@ -13,3 +13,6 @@ Only 30 samples were used to train forward pass using 1% top entropy contributor
 The exceptionally high R 2 value (0.9187) achieved by the optimized Lasso model confirms that the statistical blowdown recovery was highly successful. This indicates that the recovered, sparse graph structure is an excellent proxy for the original, complex connectivity required for the prediction task, accurately preserving the critical pathways while eliminating extraneous noise.
 
 This shows 1% data can teach model, 90% of its learning (prior nodes responsible for triggering given outcome such as "anxiety").
+
+See au.jl as start.
+This work develops a noncommutative algebraic framework connecting geometry and arithmetic. It encodes spaces via operator algebras and organizes combinatorial structures using Hopf algebras, formalizing renormalization as algebraic operations. By unifying discrete, continuous, and arithmetic objects, it provides a rich template for exploring algebraic variations and can be naturally integrated into Arithmetic Universes (AU) for modeling node interactions, heterogeneous operations, and stimulus-dependent behaviors.
