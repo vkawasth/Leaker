@@ -3,6 +3,7 @@
 # Tested on 3.5M nodes / 5.3M edges → runs in seconds per 1000 steps
 using Revise
 include("entropy_bv.jl")
+include("metriplectic.jl")
 using .EntropyBV
 
 using CSV, DataFrames, LinearAlgebra, SparseArrays, Random, Statistics
@@ -777,6 +778,84 @@ function generate_sbi_dataset(N=10_000; path="sbi_dataset.bson")
     @info "Saved → $path"
 end
 
+function build_C1(id2idx, edges)
+    src = Int[]
+    dst = Int[]
+    val = Float64[]
+    index = Dict{Tuple{Int,Int},Int}()
+
+    k = 1
+    for e in eachrow(edges)
+        i = id2idx[e.n1]
+        j = id2idx[e.n2]
+
+        # i→j = +1
+        push!(src, i); push!(dst, j); push!(val,  1.0)
+        index[(i,j)] = k
+        k += 1
+
+        # j→i = -1
+        push!(src, j); push!(dst, i); push!(val, -1.0)
+        index[(j,i)] = k
+        k += 1
+    end
+
+    return C1(src, dst, val, index)
+end
+
+function build_C2(id2idx, edges)
+    n = length(id2idx)
+
+    # neighbor lists
+    nbrs = [Int[] for _ in 1:n]
+    for e in eachrow(edges)
+        i = id2idx[e.n1]
+        j = id2idx[e.n2]
+        push!(nbrs[i], j)
+        push!(nbrs[j], i)
+    end
+
+    src = Int[]
+    dst = Int[]
+    val = Float64[]
+    index = Dict{Tuple{Int,Int},Int}()
+
+    k = 1
+    for i in 1:n
+        Ni = nbrs[i]
+        for j in Ni
+            if j <= i; continue; end
+            Nj = nbrs[j]
+
+            # intersect i-neighbors and j-neighbors to find k
+            for k3 in intersect(Ni, Nj)
+                if k3 <= j; continue; end
+
+                # + orientation
+                push!(src, i); push!(dst, j); push!(val, 1.0)
+                index[(i,j)] = k; k += 1
+
+                push!(src, j); push!(dst, k3); push!(val, 1.0)
+                index[(j,k3)] = k; k += 1
+
+                push!(src, k3); push!(dst, i); push!(val, 1.0)
+                index[(k3,i)] = k; k += 1
+
+                # reverse orientation
+                push!(src, j); push!(dst, i); push!(val, -1.0)
+                index[(j,i)] = k; k += 1
+
+                push!(src, k3); push!(dst, j); push!(val, -1.0)
+                index[(k3,j)] = k; k += 1
+
+                push!(src, i); push!(dst, k3); push!(val, -1.0)
+                index[(i,k3)] = k; k += 1
+            end
+        end
+    end
+
+    return C2(src, dst, val, index)
+end
 
 # ==============================================================
 # 7. Main simulation
@@ -805,12 +884,17 @@ function run_entropy_sim(nodes_path, edges_path;
     #foreach(n -> println(">>" * String(n) * "<<"), names(edges))
     A = build_adjacency(edges, id2idx, mode=:inverse_length)
 
+    C1 = build_C1(id2idx, edges)       # 1-cochain (edges)
+    C2 = build_C2(id2idx, edges)       # 2-cochain (triangles or faces)
     @info "Graph built: $n nodes, $(nnz(A)÷2) undirected edges"
 
     # initial and target distributions
     p = fill(1.0/n, n) .+ rand(n)*1e-8; p ./= sum(p)
     # At the top of your function, after p is created:
     prev_H_ref = Ref{Float64}(NaN)
+
+    blowdown_log = Dict{Int, Vector{Int}}()
+
     if pi_mode === :uniform
         π = fill(1.0/n, n)
     elseif pi_mode === :degree
@@ -839,12 +923,14 @@ function run_entropy_sim(nodes_path, edges_path;
                 alpha = 0.02,            # 20× stronger than usual
                 perturb_kicks = 40       # massive random blow-up
             )
+            #=
             # ← APPLY THE FINAL dp (this is the missing piece!)
             @inbounds @simd for i in eachindex(p)
                 p[i] += dt * dp[i]
             end
             p .= max.(p, 1e-15)
             p ./= sum(p)
+            =#
         end
         if it >= 100
             current_H = shannon_entropy(p)
@@ -854,14 +940,40 @@ function run_entropy_sim(nodes_path, edges_path;
                     @info "BV AUTO-TRIGGERED | step $it | ΔH = $ΔH | min(p) = $(minimum(p))"
                     bv_resolve_top_entropy!(p, dp, A; current_step=it, alpha=2.8e-3, top_fraction=0.17)
                     # ← APPLY THE FINAL dp (this is the missing piece!)
+                    #=
                     @inbounds @simd for i in eachindex(p)
                         p[i] += dt * dp[i]
                     end
                     p .= max.(p, 1e-15)
                     p ./= sum(p)
+                    =#
                 end
             end
             prev_H_ref[] = current_H
+        end
+
+        # Trigger Blow down often
+        if it % 50 == 0
+            println("\nBlow Down event...\n")
+            #blown_nodes = apply_blowdown!(p; frac=0.02, reduction=0.5)
+            #blowdown_log[it] = blown_nodes
+            #@info "Step $it: blowdown applied to $(length(blown_nodes)) nodes"
+
+            # Example: compress 1% of highest-probability nodes
+            top_fraction = 0.01
+
+            # perform_blowdown returns the mask, reduced adjacency, and blown-down cochains
+            keep, A_reduced, (C1_blown, C2_blown) = perform_blowdown(p, A, C1, C2; top_fraction=top_fraction)
+
+            # Optionally, replace your current graph & cochains with the blown-down ones
+            A = A_reduced
+            C1 = C1_blown
+            C2 = C2_blown
+            p = p[keep]   # compress the probability vector
+            dp = dp[keep]
+
+            # Normalize
+            #p ./= sum(p)
         end
 
         # ← APPLY THE FINAL dp (this is the missing piece!)
@@ -1343,6 +1455,25 @@ function save_entropy_brain_paraview(
     return filename
 end
 
+# Select top-entropy nodes for blowdown
+function select_blowdown_nodes(p::Vector{Float64}; frac=0.01)
+    n = length(p)
+    h = @. -p * log(p + eps())  # local entropy, add eps() to avoid log(0)
+    k = max(1, round(Int, frac * n))
+    idx = partialsortperm(h, rev=true, 1:k)  # top-k indices
+    return idx
+end
+
+# Apply blowdown: dampen probabilities and renormalize
+function apply_blowdown!(p::Vector{Float64}; frac=0.01, reduction=0.5)
+    top_idx = select_blowdown_nodes(p; frac=frac)
+    @inbounds for i in top_idx
+        p[i] *= (1 - reduction)   # dampen
+    end
+    p ./= sum(p)  # re-normalize
+    return top_idx
+end
+
 
 # ==============================================================
 # 8. Run it
@@ -1377,7 +1508,7 @@ if abspath(PROGRAM_FILE) == @__FILE__
     println("SINGLE SIMULATION DONE — NOW GENERATING SBI DATASET")
     println("="^60)
 
-    
+    #= Testing blow down
     # 2. THIS IS WHERE generate_sbi_dataset IS CALLED
     # Warning for C++ creators coming to Julia, Python etc...
     # Nested functions can use variables that are not explicitly passed as 
@@ -1396,5 +1527,5 @@ if abspath(PROGRAM_FILE) == @__FILE__
     println("   • Full SBI dataset (sbi_dataset.bson)")
     println("   • Ready for neural posterior training")
     println("\nNext step: run the training script (or add it here)!")
-    
+    =#
 end
