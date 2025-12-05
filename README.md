@@ -19,7 +19,32 @@ This work develops a noncommutative algebraic framework connecting geometry and 
 
 Nodes get characterized into sets as outcome of stimulus across regions using julia sets of functions for each node.
 
-Top positive nodes at step 1: [3045630, 2917843, 3089964, 1602048, 2079787, 664014, 2445504, 2494587, 293607, 2941518]
+=== Step 1 ===
+Threshold mode:  Positive=1726544, Negative=883651, Neutral=889805
+Top-N mode:      Positive=10, Negative=20, Neutral=3499970
+Top positive nodes (Top-N): [3045630, 2917843, 3089964, 1602048, 2079787, 664014, 2445504, 2494587, 293607, 2941518]
+Top negative nodes (Top-N): [151946, 2158242, 3064095, 2642764, 350760, 2718645, 695457, 2464571, 1787631, 1697961]
 
-Top negative nodes at step 1: [151946, 2158242, 3064095, 2642764, 350760, 2718645, 695457, 2464571, 1787631, 1697961, 2495710, 2700850, 2344967, 783073, 3178753, 32807, 1608161, 3267477, 253556, 1623958]
+=== Step 2 ===
+Threshold mode:  Positive=2137031, Negative=234987, Neutral=1127982
+Top-N mode:      Positive=10, Negative=20, Neutral=3499970
+Top positive nodes (Top-N): [3045630, 2917843, 3089964, 1602048, 2079787, 664014, 2445504, 2494587, 293607, 2941518]
+Top negative nodes (Top-N): [151946, 2158242, 3064095, 2642764, 350760, 2718645, 695457, 2464571, 1787631, 1697961]
 
+=== Step 3 ===
+Threshold mode:  Positive=1735757, Negative=883651, Neutral=880592
+Top-N mode:      Positive=10, Negative=20, Neutral=3499970
+Top positive nodes (Top-N): [3045630, 2917843, 3089964, 1602048, 2079787, 664014, 2445504, 2494587, 293607, 2941518]
+Top negative nodes (Top-N): [594054, 2945151, 259511, 1553829, 1302780, 2113074, 291983, 1873868, 2966238, 1189699]
+
+=== Step 4 ===
+Threshold mode:  Positive=2330603, Negative=364848, Neutral=804549
+Top-N mode:      Positive=10, Negative=20, Neutral=3499970
+Top positive nodes (Top-N): [3045630, 2917843, 3089964, 1602048, 2079787, 664014, 2445504, 2494587, 293607, 2941518]
+Top negative nodes (Top-N): [151946, 2158242, 3064095, 2642764, 350760, 2718645, 695457, 2464571, 1787631, 1697961]
+
+=== Step 5 ===
+Threshold mode:  Positive=1879935, Negative=883651, Neutral=736414
+Top-N mode:      Positive=10, Negative=20, Neutral=3499970
+Top positive nodes (Top-N): [3045630, 2917843, 3089964, 1602048, 2079787, 664014, 2445504, 2494587, 293607, 2941518]
+Top negative nodes (Top-N): [3469043, 3242516, 1837390, 3235535, 79252, 1869841, 1077979, 1956725, 3214263, 1833849]
