@@ -18,6 +18,7 @@ See au.jl as start.
 This work develops a noncommutative algebraic framework connecting geometry and arithmetic. It encodes spaces via operator algebras and organizes combinatorial structures using Hopf algebras, formalizing renormalization as algebraic operations. By unifying discrete, continuous, and arithmetic objects, it provides a rich template for exploring algebraic variations and can be naturally integrated into Arithmetic Universes (AU) for modeling node interactions, heterogeneous operations, and stimulus-dependent behaviors.
 
 Nodes get characterized into sets as outcome of stimulus across regions using julia sets of functions for each node.
+
 Top positive nodes at step 1: [3045630, 2917843, 3089964, 1602048, 2079787, 664014, 2445504, 2494587, 293607, 2941518]
 Top negative nodes at step 1: [151946, 2158242, 3064095, 2642764, 350760, 2718645, 695457, 2464571, 1787631, 1697961, 2495710, 2700850, 2344967, 783073, 3178753, 32807, 1608161, 3267477, 253556, 1623958]
 Final step category counts:
