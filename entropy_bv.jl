@@ -527,10 +527,8 @@ Return a Bool vector keep[1..m] where keep[i] = true iff node i survives
 the blow-down. (Exceptional nodes are removed.)
 """
 function build_blowdown_mask(m::Int, exceptional::Vector{Int})
-    keep = trues(m)
-    for i in exceptional
-        keep[i] = false
-    end
+    keep = falses(m)             # Start with rejecting all (99% rejection)
+    keep[exceptional] .= true    # Keep the exceptional 1%
     return keep
 end
 
@@ -543,7 +541,13 @@ Return a new C1 in which all edges touching an exceptional node
 
 Implements the ideal quotient A/I: edges in the ideal are sent to 0.
 """
-function blowdown_C1(c1::C1, keep::Vector{Bool})
+function blowdown_C1(c1::C1, keep::AbstractVector{Bool})
+    # --- 1. CRITICAL FIX: Create the Old Index -> New Index map ---
+    # The cumsum of 'keep' provides the new, contiguous index for every retained node.
+    # Ex: keep = [T, F, T, F, T]  =>  new_idx = [1, 1, 2, 2, 3]
+    # new_idx[old_index] gives the new_index (if keep[old_index] is true)
+    new_idx = cumsum(keep)
+
     u_new = Int[]
     v_new = Int[]
     vals_new = Float64[]
@@ -551,14 +555,25 @@ function blowdown_C1(c1::C1, keep::Vector{Bool})
 
     k_new = 0
     for k in eachindex(c1.vals)
-        u = c1.u[k]
-        v = c1.v[k]
-        if keep[u] && keep[v]
+        u_old = c1.u[k]
+        v_old = c1.v[k]
+
+        # 2. BOUNDS CHECK: This 'if' relies on u_old and v_old being within [1, length(keep)].
+        # If the original BoundsError occurred, the data in c1.u or c1.v is flawed.
+        # Assuming the original C1 construction is fixed and the node indices are now valid:
+        if keep[u_old] && keep[v_old]
             k_new += 1
-            push!(u_new, u)
-            push!(v_new, v)
+            
+            # 3. APPLY MAPPING: Translate the old indices to the new, contiguous indices
+            u_mapped = new_idx[u_old]
+            v_mapped = new_idx[v_old]
+
+            push!(u_new, u_mapped)
+            push!(v_new, v_mapped)
             push!(vals_new, c1.vals[k])
-            idxmap_new[(u,v)] = k_new
+            
+            # Use the MAPPED indices for the new index map
+            idxmap_new[(u_mapped, v_mapped)] = k_new
         end
     end
 
@@ -571,18 +586,37 @@ blowdown_C2(c2::C2, keep)
 
 Same idea: remove all 2-paths touching exceptional nodes.
 """
-function blowdown_C2(c2::C2, keep::Vector{Bool})
+function blowdown_C2(c2::C2, keep::AbstractVector{Bool})
+    # --- 1. CREATE MAPPING: Generate the map from Old Node Index to New Node Index ---
+    # This must be done once per blowdown.
+    new_idx = cumsum(keep)
+
     u2 = Int[]; v2 = Int[]; w2 = Int[]; vals2 = Float64[]
     idxmap2 = Dict{Tuple{Int,Int,Int},Int}()
 
     k2 = 0
     for k in eachindex(c2.vals)
-        u = c2.u[k]; v = c2.v[k]; w = c2.w[k]
-        if keep[u] && keep[v] && keep[w]
+        u_old = c2.u[k]
+        v_old = c2.v[k]
+        w_old = c2.w[k]
+        
+        # Check if all three nodes of the 2-simplex are kept
+        if keep[u_old] && keep[v_old] && keep[w_old]
             k2 += 1
-            push!(u2, u); push!(v2, v); push!(w2, w)
+            
+            # --- 2. APPLY MAPPING: Translate old indices to new, contiguous indices ---
+            u_mapped = new_idx[u_old]
+            v_mapped = new_idx[v_old]
+            w_mapped = new_idx[w_old]
+
+            push!(u2, u_mapped)
+            push!(v2, v_mapped)
+            push!(w2, w_mapped)
+            
             push!(vals2, c2.vals[k])
-            idxmap2[(u,v,w)] = k2
+            
+            # Use the MAPPED indices for the new index map
+            idxmap2[(u_mapped, v_mapped, w_mapped)] = k2
         end
     end
 
@@ -598,7 +632,8 @@ This is π: A -> A'.
 
 We keep node ordering the same (1..m), only delete rows/cols.
 """
-function blowdown_graph(A_sub::SparseMatrixCSC, keep::Vector{Bool})
+function blowdown_graph(A_sub::SparseMatrixCSC, keep::AbstractVector{Bool})
+    # Accept either BitVector or Vector{Bool} or other boolean-like vectors.
     inds = findall(keep)
     return A_sub[inds, inds]
 end
@@ -616,8 +651,8 @@ Top-level blow-down driver:
 Returns:
     keep_mask, A_sub', blown_down_objects...
 """
-function perform_blowdown(p::Vector{Float64}, A_sub::SparseMatrixCSC,
-                          objs...; top_fraction=0.01)
+function perform_blowdown(p::Vector{Float64}, A_sub::SparseMatrixCSC,idx2id::Vector{Int},
+    cochains::Tuple; top_fraction=0.01)
 
     m = length(p)
     exceptional = select_exceptional_nodes(p; top_fraction=top_fraction)
@@ -625,16 +660,17 @@ function perform_blowdown(p::Vector{Float64}, A_sub::SparseMatrixCSC,
 
     # blow-down graph adjacency
     A_new = blowdown_graph(A_sub, keep)
-
+    # Slice the index map
+    idx2id_new = idx2id[keep] # New map.
     # blow-down all cochains
     blown = Tuple(
         obj isa C1 ? blowdown_C1(obj, keep) :
         obj isa C2 ? blowdown_C2(obj, keep) :
         error("Unsupported type in blowdown: $(typeof(obj))")
-        for obj in objs
+        for obj in cochains
     )
 
-    return keep, A_new, blown...
+    return keep, A_new, idx2id_new, blown...
 end
 
 # ---------------------------
