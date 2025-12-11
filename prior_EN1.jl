@@ -5,6 +5,7 @@ using Random
 using Statistics
 using UMAP
 using Plots
+using LinearAlgebra
 
 OUTCOMES = [
     :epilepsy, :confusion, :blurred_vision, :sweating,
@@ -325,7 +326,53 @@ X_epi, y_epi = to_tensor_with_prior(df_epi, region_map, MOUSE_REGION_PRIOR)
 #Plot it
 # --- Prepare data ---
 # X_epi is 3 x N (features x samples)
+
+# ----------------------
+# Take a small subset
+# ----------------------
+N_total = size(X_epi, 2)
+N_subset = min(1000, N_total)         
+idxs = randperm(N_total)[1:N_subset]
+
+# X_umap_input is (Features x Samples) - required for UMAP.jl
+X_umap_input = Float32.(X_epi[:, idxs]) # X_epi is (F x N), so no transpose needed on X_epi[:, idxs]
+y_umap = vec(y_epi[1, idxs])        # 1D labels vector
+
+# ----------------------
+# Fit UMAP (FIXED SYNTAX and INIT KEYWORD)
+# ----------------------
+umap_model = UMAP.UMAP_(
+    X_umap_input, # Positional Arg 1: Data Matrix (3 x N_subset)
+    2;            # Positional Arg 2: Output Dimension
+    n_neighbors = 5,
+    min_dist = 0.1,
+    init = :random # <--- FIXED: Use :random for faster initialization
+)
+
+# Learn embedding (fit! is implied by the constructor when passing X)
+# Get embedding (Embedding is in (Features x Samples) format: 2 x N_subset)
+embedding_fxn = UMAP.transform(umap_model, X_umap_input)
+
+# ----------------------
+# Plot
+# ----------------------
+p = scatter(
+        embedding_fxn[1, :],   # UMAP1 coordinates (Row 1)
+        embedding_fxn[2, :],   # UMAP2 coordinates (Row 2)
+        group=y_umap,          # Use the 1D labels vector
+        title="UMAP of Node Features Colored by Outcome",
+        xlabel="UMAP1", ylabel="UMAP2",
+        markersize=6,
+        legend=:topright,
+        palette=[:blue, :red]
+    )
+display(p)
+savefig("umap_plot.png")
+
+
+
 X_umap = transpose(X_epi)  # N x 3, rows = samples
+
 
 # Standardize features
 for j in 1:size(X_umap, 2)
@@ -335,24 +382,6 @@ end
 # Labels (0 or 1)
 labels = vec(y_epi)  # make 1D vector
 
-# --- Fit UMAP ---
-X_umap_transposed = X_umap'
-umap_model = UMAP.UMAP_(
-    X_umap_transposed, # 1. Data Matrix (AbstractMatrix)
-    2;      # 2. Output Dimension (Integer), POSITIONAL
-    n_neighbors=5, 
-    min_dist=0.1
-)
-embedding = fit_transform(umap_model, X_umap_transposed)
-
-# --- Plot with colors by outcome ---
-scatter(embedding[:,1], embedding[:,2],
-        group=labels,
-        title="UMAP of Node Features Colored by Outcome",
-        xlabel="UMAP1", ylabel="UMAP2",
-        markersize=5,
-        legend=:topright,
-        palette=[:blue :red])  # 0 = blue, 1 = red
 
 X_epi, y_epi = to_tensor_with_prior(df_epi, region_map, MOUSE_REGION_PRIOR)        
 # 1. Calculate N0 and N1 (assuming y_epi is 1xN matrix of 0s and 1s)
