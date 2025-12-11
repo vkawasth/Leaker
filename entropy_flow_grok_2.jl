@@ -462,6 +462,35 @@ function simulate_outcomes(p::Vector{Float64}, nodes::DataFrame; noise=0.1)
     return outcomes
 end
 
+# Simulate outcomes as binary (probabilistic based on entropy thresholds)
+function simulate_outcomes_high_prob(p::Vector{Float64}, nodes::DataFrame; noise=0.1)
+    outcomes = zeros(Int, length(OUTCOMES))
+    
+    # Calculate the system-wide maximum entropy for normalization
+    # H_max = -p .* log2.(max.(p, 1e-20))
+    # Note: Maximum of the ENTROPY term is used as the normalization factor
+    max_system_entropy = maximum(-p .* log2.(max.(p, 1e-20)))
+
+    for (i, outcome) in enumerate(OUTCOMES)
+        regions = OUTCOME_REGION_MAP[outcome]
+        avg_ent = regional_entropy(p, nodes, regions)
+        
+        # 🚀 CRITICAL CHANGE: INVERT the metric relationship 🚀
+        # The metric should now use LOW entropy to drive the final probability.
+        # We invert the sign of the normalized entropy and use the logistic function.
+        # The expression `-(avg_ent / max_system_entropy)` means low regional entropy
+        # results in a larger, positive input to the logistic function.
+        
+        metric_input = -(avg_ent / max_system_entropy) + 0.5 + noise * randn()
+        
+        prob = logistic(metric_input) # Sigmoid [0,1]
+        
+        outcomes[i] = rand() < prob ? 1 : 0
+    end
+    return outcomes
+end
+
+
 function compute_dp!(dp, p, π; mobility=:diag)
     @inbounds for i in eachindex(p)
         grad_i = log(p[i] / π[i]) + 1
@@ -826,7 +855,7 @@ function simulate_entropy_p(params::EntropyPriorParams; steps=100, dt=1e-4,
     @assert length(p) == length(π) "State length mismatch: length(p)=$(length(p)) != length(π)=$(length(π))"
     @assert size(A,1) == length(p) "Matrix dimension mismatch: size(A,1)=$(size(A,1)) != length(p)=$(length(p))"
     @info "simulate_entropy_p: Setup complete. A size=$(size(A)), p length=$n"
-    
+
     # Best-effort: if A_initial was created with full all_ids vector, you must pass that mapping; fallback: find row positions.
     println("First 10 idx2ids: ", first(id2idx, 10))
     println("First 20 core_ids: ", first(core_ids, 20))
@@ -955,7 +984,10 @@ function simulate_entropy_p(params::EntropyPriorParams; steps=100, dt=1e-4,
         p_top = p_final[final_core_local_indices],  # P values for the core
         h_top = h_final[final_core_local_indices]   # H values for the core
     )
-    outcomes = simulate_outcomes(p_final, res.nodes; noise=params.noise)
+    # High Entropy
+    #outcomes = simulate_outcomes(p_final, res.nodes; noise=params.noise)
+    # High Probability
+    outcomes = simulate_outcomes_high_prob(p_final, res.nodes; noise=params.noise)
     return (p=p_final, top_entropy = top_core_data, outcomes=outcomes)
 end
 
@@ -1835,7 +1867,7 @@ if abspath(PROGRAM_FILE) == @__FILE__
     if !isfile("sbi_dataset.bson") || filesize("sbi_dataset.bson") < 10_000_000
         @info "Generating 30 simulations for SBI (this takes 1–6 hours)..."
         # will use global res parameters such as res.nodes, res.edges res.p res.A etc.
-        generate_sbi_dataset(res, res.id2idx, 30; path="sbi_dataset.bson")
+        generate_sbi_dataset(res, res.id2idx, 5000; path="sbi_dataset.bson")
     else
         @info "SBI dataset already exists → skipping generation"
     end
