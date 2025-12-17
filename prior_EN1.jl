@@ -223,6 +223,34 @@ data = BSON.load(DATA_FILE)
 #   p, top_entropy.idx, top_entropy.p_top, top_entropy.h_top, outcomes
 samples = data[:sims]
 priors = data[:θs]
+
+function load_metadata()
+    println("Loading node metadata from: $METADATA_CSV_PATH")
+    
+    # Try reading the CSV with explicit parameters:
+    # 1. header=1: Ensure the first row is used for column names.
+    # 2. delim='\t': Try Tab delimiter (replace with ',' or ';' if needed).
+    # 3. stripwhitespace=true: Remove any leading/trailing spaces from column names and data.
+    df = CSV.read(
+        METADATA_CSV_PATH, 
+        DataFrame, 
+        header=1, 
+        delim=',', 
+        stripwhitespace=true
+    )
+
+    # Sanity Check (unchanged)
+    required_cols = ["node_id", "x", "y", "z", "probability", "local_entropy_bits", "degree", "region"]
+    for col in required_cols
+        if !(col in names(df))
+            error("Metadata CSV missing required column: $col")
+        end
+    end
+    
+    println("Successfully loaded $(nrow(df)) nodes.")
+    return df
+end
+df_metadata = load_metadata()
 # -----------------------------------------
 # 2. Load node→region map
 # -----------------------------------------
@@ -246,7 +274,7 @@ function load_node_region_map(path::String)
 end
 region_map = load_node_region_map(NODES_FILE)
 
-
+    
 
 nsamples = length(samples)
 initial_bias = -1.0
@@ -256,6 +284,11 @@ initial_bias = -1.0
 # -----------------------------------------
 function build_training_table(outcome_symbol)
     outcome_index = findfirst(==(outcome_symbol), OUTCOMES)
+    # build training data for epilepsy
+    n_pos_sims = sum(samples[s].outcomes[outcome_index] == 1 for s in 1:nsamples)
+    n_neg_sims = nsamples - n_pos_sims
+    
+    println("Simulation-level:  pos=$n_pos_sims, neg=$n_neg_sims")
 
     rows = Vector{NamedTuple}()
 
@@ -279,13 +312,87 @@ function build_training_table(outcome_symbol)
     return DataFrame(rows)
 end
 
-# build training data for epilepsy
+function outcome_prior(region::String, outcome::Symbol)
+    if region in OUTCOME_REGION_MAP[outcome]
+        return 2.0   # boost
+    else
+        return 1.0
+    end
+end
+
+# node-level count:
 df_epi = build_training_table(:epilepsy)
+n_pos_nodes = sum(df_epi.label .== 1)
+n_neg_nodes = sum(df_epi.label .== 0)
+
+println("Node-level: pos=$n_pos_nodes, neg=$n_neg_nodes, ratio = $(n_pos_nodes / n_neg_nodes)")
+    
+#df_epi = build_training_table(:epilepsy)
 
 # -----------------------------------------
 # 4. Convert to tensors, include region priors
 # -----------------------------------------
-function to_tensor_with_prior(df::DataFrame, region_map::Dict{Int, Vector{String}}, prior_map::Dict{String, Float64})
+function to_tensor_with_prior(
+    df::DataFrame,
+    region_map::Dict{Int, Vector{String}},
+    prior_map::Dict{String, Float64},
+    outcome_symbol::Symbol
+)
+    N = nrow(df)
+
+    # Ensure 'probability' exists
+    if !("probability" in names(df))
+        println("WARNING: metadata missing `probability`. Setting to zeros.")
+        df.probability = zeros(Float32, N)
+    end
+
+    println(">>> COLUMNS INSIDE FUNCTION: ", names(df))
+    println(">>> FIRST ROW: ", df[1, :])
+
+    # 7 FEATURES: probability, local_entropy_bits, prior, x, y, z, degree
+    X = zeros(Float32, 7, N)
+    y = Float32.(df.label)
+    y = reshape(y, 1, :)
+
+    for (i, row) in enumerate(eachrow(df))
+        # --- Feature 1: probability ---
+        X[1, i] = Float32(row.probability)
+
+        # --- Feature 2: local entropy ---
+        X[2, i] = Float32(row.local_entropy_bits)
+
+        # --- Feature 3: region prior with outcome boost ---
+        regs = get(region_map, row.node, [""])
+        region = isempty(regs) ? "" : regs[1]
+
+        base  = get(prior_map, region, 1.0)
+        boost = outcome_prior(region, outcome_symbol)
+        X[3, i] = log(Float32(base * boost) + 1e-6)
+
+        # --- Features 4–6: spatial coordinates ---
+        X[4, i] = Float32(row.x)
+        X[5, i] = Float32(row.y)
+        X[6, i] = Float32(row.z)
+
+        # --- Feature 7: degree ---
+        X[7, i] = Float32(row.degree)
+    end
+
+    # --- Compute normalization statistics ---
+    means = zeros(Float32, 7)
+    stds  = zeros(Float32, 7)
+
+    for j in 1:7
+        means[j] = mean(X[j, :])
+        stds[j]  = std(X[j, :])
+        # Normalize each feature row
+        X[j, :] .= (X[j, :] .- means[j]) ./ (stds[j] + 1e-6)
+    end
+
+    return X, reshape(y, 1, :), means, stds
+end
+
+function to_tensor_with_prior_prev(df::DataFrame, region_map::Dict{Int, Vector{String}}, prior_map::Dict{String, Float64})
     N = nrow(df)
     X = zeros(Float32, 3, N)   # 2 features + 1 prior
     y = Float32.(df.label)     # N-element vector
@@ -322,10 +429,45 @@ function to_tensor_with_prior(df::DataFrame, region_map::Dict{Int, Vector{String
     return X, reshape(y, 1, :), means, stds 
 end
 
-X_epi, y_epi = to_tensor_with_prior(df_epi, region_map, MOUSE_REGION_PRIOR)
+println(names(df_metadata))
+println("Columns in metadata: ", names(df_metadata))
+println("Number of metadata rows: ", nrow(df_metadata))
+
+# Make metadata match key
+df_metadata2 = rename(df_metadata, :node_id => :node)
+
+#X_epi, y_epi, X_means, X_stds = to_tensor_with_prior(df_metadata2, region_map, MOUSE_REGION_PRIOR)
+
+
 #Plot it
 # --- Prepare data ---
 # X_epi is 3 x N (features x samples)
+
+
+
+
+
+
+
+# Merge
+df_train = leftjoin(df_epi, df_metadata2, on=:node)
+
+
+X_epi, y_epi, X_means, X_stds = to_tensor_with_prior(df_train, region_map, MOUSE_REGION_PRIOR, :epilepsy)        
+println("Number of nodes in tensors X_epi: ", size(X_epi, 2))
+println("Metadata rows = ", nrow(df_metadata))
+
+try
+    println("X rows × cols = ", size(X_epi))
+catch
+    println("X_epi is not defined")
+end
+
+try
+    println("y length = ", length(y_epi))
+catch
+    println("y_epi is not defined")
+end
 
 # ----------------------
 # Take a small subset
@@ -369,8 +511,6 @@ p = scatter(
 display(p)
 savefig("umap_plot.png")
 
-
-
 X_umap = transpose(X_epi)  # N x 3, rows = samples
 
 
@@ -382,8 +522,6 @@ end
 # Labels (0 or 1)
 labels = vec(y_epi)  # make 1D vector
 
-
-X_epi, y_epi = to_tensor_with_prior(df_epi, region_map, MOUSE_REGION_PRIOR)        
 # 1. Calculate N0 and N1 (assuming y_epi is 1xN matrix of 0s and 1s)
 N1 = sum(y_epi)
 N0 = length(y_epi) - N1
@@ -394,6 +532,38 @@ const W1 = N_total / (2 * N1)
 const W0 = N_total / (2 * N0)
 
 println("Class weights: W0 (Negative) = $(round(W0, digits=2)), W1 (Positive) = $(round(W1, digits=2))")
+
+# --- Compute normalized class weights ---
+# y_epi is 1×N or N-vector of 0/1 labels (Float32/Int)
+n_pos = count(y_epi .== 1)
+n_neg = count(y_epi .== 0)
+N = n_pos + n_neg
+
+println("Counts -> pos: $n_pos, neg: $n_neg, total: $N")
+
+# --- Raw inverse-frequency weights (positives get higher weight if rare)
+# Use total so weights are interpretable (avg ~1)
+W0_raw = N / max(n_neg, 1)   # weight for negatives
+W1_raw = N / max(n_pos, 1)   # weight for positives
+
+# Optionally scale down extreme ratios by clipping
+max_allowed = 200.0          # tuneable (20..1000 depending on problem)
+W0_clipped = clamp(W0_raw, 1.0, max_allowed)
+W1_clipped = clamp(W1_raw, 1.0, max_allowed)
+
+# Normalize so numbers are neither huge nor tiny (sum -> 2)
+total = W0_clipped + W1_clipped
+W0_norm = W0_clipped / total * 2.0   # sum to 2 (or 1.0 if you prefer)
+W1_norm = W1_clipped / total * 2.0
+
+# Enforce a floor so no class is zeroed out
+min_floor = 0.01
+W0_norm = max(W0_norm, min_floor)
+W1_norm = max(W1_norm, min_floor)
+
+println("Final class weights -> W0 = $(round(W0_norm, digits=6)), W1 = $(round(W1_norm, digits=6))")
+
+#println("Normalized class weights → W0 = $W0_norm, W1 = $W1_norm")
 
 # 2. Define the weighted loss function
 function weighted_binarycrossentropy(y_pred::AbstractArray{T}, y_true::AbstractArray{T}, w1::Real, w0::Real) where T<:AbstractFloat    # Weight map: W1 for positive (1), W0 for negative (0)
@@ -418,14 +588,20 @@ initial_bias = -1.0 # Use -1.0 as a safe bias towards the negative class
 # 5. Update model for 3 input features
 # -----------------------------------------
 model = Chain(
-    Dense(3, 64, leakyrelu),   # now 3 inputs
-    Dense(64, 32, leakyrelu),
-    Dense(32, 16, relu),   # Third layer
-    # Add an explicit initial bias (b) to push the initial prediction down
-    Dense(16, 1, bias=fill(initial_bias, 1)), # initial bias is now -1.0
+    Dense(7, 16, relu),
+    Dense(16, 1),
     σ
 )
-
+#=
+model = Chain(
+    Dense(7, 64, leakyrelu),   # now 3 inputs
+    Dense(64, 64, leakyrelu),
+    Dense(64, 32, relu),   # Third layer
+    # Add an explicit initial bias (b) to push the initial prediction down
+    Dense(32, 1, bias=fill(initial_bias, 1)), # initial bias is now -1.0
+    σ
+)
+=#
 loss_unweighted(m) = Flux.binarycrossentropy(model(x), y)
 opt = ADAM(1e-3)
 #reshape y
@@ -442,7 +618,7 @@ function train_model!(model::Chain, X::Matrix{Float32}, y::Matrix{Float32};
     # --- Define loss function that takes a model `m` ---
     loss(m) = Flux.binarycrossentropy(m(X), y) 
     # 3. Use this new loss in your training loop:
-    loss_weighted(m) = weighted_binarycrossentropy(m(X), y, Float32(W1), Float32(W0))
+    loss_weighted(m) = weighted_binarycrossentropy(m(X), y, Float32(W1_norm), Float32(W0_norm))
     # --- Set up optimizer with state ---
     opt = Flux.Adam(lr)
     state = Flux.setup(opt, model)   # create optimizer state
@@ -458,9 +634,18 @@ function train_model!(model::Chain, X::Matrix{Float32}, y::Matrix{Float32};
        
         if  verbose &&  epoch % 20 == 0
             # Get the gradient of the first layer's weights
-            grad_w = grads[1].layers[1].weight
-            println("Epoch $epoch → Max Abs Grad (Layer 1): ", maximum(abs, grad_w))
-            println("Epoch $epoch → Loss = ", loss(model))
+            #grad_w = grads[1].layers[1].weight
+            #println("Epoch $epoch → Max Abs Grad (Layer 1): ", maximum(abs, grad_w))
+            #println("Epoch $epoch → Loss = ", loss(model))
+            # Log max absolute gradients for all Dense layers
+            for (i, layer) in enumerate(model)
+                if layer isa Dense
+                    grad_w = grads[1].layers[i].weight
+                    grad_b = grads[1].layers[i].bias
+                    println("  Layer $i max abs weight grad = ", maximum(abs.(grad_w)))
+                    println("  Layer $i max abs bias grad   = ", maximum(abs.(grad_b)))
+                end
+            end
         end
         
     end
@@ -473,32 +658,81 @@ model = train_model!(model, X_epi, y_epi, epochs=500, lr=1e-2)  # fewer epochs f
 # -----------------------------------------
 # 7. Inference: Score all nodes for epilepsy
 # -----------------------------------------
-function score_nodes(model, df, region_map, prior_map, X_means::Vector{Float32}, X_stds::Vector{Float32})
+function score_nodes(
+    model,
+    df::DataFrame,
+    region_map::Dict{Int, Vector{String}},
+    prior_map::Dict{String, Float64},
+    X_means::Vector{Float32},
+    X_stds::Vector{Float32},
+    outcome::Symbol
+)
     N = nrow(df)
-    X = zeros(Float32, 3, N)
+
+    # 7 features, exactly like training
+    X = zeros(Float32, 7, N)
 
     for (i, row) in enumerate(eachrow(df))
-        node = row.node
-        X[1, i] = Float32(row.p)
-        X[2, i] = Float32(row.h)
+        # --- Feature 1: probability ---
+        X[1, i] = Float32(get(row, :probability, 0.0))
 
-        regs = get(region_map, node, [""])
-        prior_val = isempty(regs) ? 1.0 : get(prior_map, regs[1], 1.0)
-        X[3, i] = Float32(prior_val)
+        # --- Feature 2: local entropy ---
+        X[2, i] = Float32(get(row, :local_entropy_bits, 0.0))
+
+        # --- Feature 3: region prior with outcome boost ---
+        node_id = get(row, :node, get(row, :node_id, 0))
+        regs = get(region_map, node_id, [""])
+        region = isempty(regs) ? "" : regs[1]
+
+        # base prior from MOUSE_REGION_PRIOR or provided prior_map
+        base = get(prior_map, region, 1.0)
+
+        # outcome-specific boost
+        boost = outcome_prior(region, outcome)
+
+        # log-transform for stability
+        X[3, i] = log(Float32(base * boost) + 1e-6)
+
+        # --- Feature 4–6: spatial coordinates ---
+        X[4, i] = Float32(get(row, :x, 0.0))
+        X[5, i] = Float32(get(row, :y, 0.0))
+        X[6, i] = Float32(get(row, :z, 0.0))
+
+        # --- Feature 7: degree ---
+        X[7, i] = Float32(get(row, :degree, 0.0))
     end
 
-    # Normalize each row using the TRAINING STATISTICS
-    for j in 1:size(X,1)
-        X[j, :] .= (X[j, :] .- X_means[j]) ./ (X_stds[j] + 1e-6) # <--- FIXED
+    # --- Normalize using TRAINING statistics ---
+    @assert length(X_means) == 7
+    @assert length(X_stds) == 7
+
+    for j in 1:7
+        j == 3 && continue  # skip region prior
+        X[j, :] .= (X[j, :] .- X_means[j]) ./ (X_stds[j] + 1f-6)
     end
 
-    scores = model(X)
-    df.score = vec(scores)
+    # --- Debug: check region prior stats ---
+    @show minimum(X[3, :])
+    @show maximum(X[3, :])
+    @show mean(X[3, :])
+
+    # --- Forward pass ---
+    scores = model(X)              # 1 × N
+    df.score = vec(scores)         # N-vector
+
     return df
 end
 
+df_scored = score_nodes(
+    model,
+    df_epi,
+    region_map,
+    MOUSE_REGION_PRIOR,
+    X_means,
+    X_stds,
+    :epilepsy  # specify the outcome here
+)
 
-df_scored = score_nodes(model, df_epi, region_map, MOUSE_REGION_PRIOR, X_means, X_stds)
 println("Positive fraction: ", mean(df_epi.label))
 # -----------------------------------------
 # 8. Pick top-K nodes

@@ -109,7 +109,12 @@ const OUTCOME_REGION_MAP = Dict{Symbol, Vector{String}}(
     ]
 )
 
-const OUTCOMES = [:epilepsy, :confusion, :blurred_vision, :sweating, :coma, :energized_alert, :hyperactivity, :anxiety]
+#const OUTCOMES = [:epilepsy, :confusion, :blurred_vision, :sweating, :coma, :energized_alert, :hyperactivity, :anxiety]
+
+# HYPERACTIVITY CONNECTOME GENERATION
+#const OUTCOMES = [:hyperactivity, :hyperactivity, :hyperactivity, :hyperactivity, :hyperactivity, :hyperactivity, :hyperactivity, :hyperactivity]
+# COMA CONNECTOME GENERATION
+const OUTCOMES = [:coma, :coma, :coma, :coma, :coma, :coma, :coma, :coma]
 
 const MOUSE_REGION_PRIOR = Dict{String, Float64}(
     # ────────────────────── HIGH PRIOR ──────────────────────
@@ -1853,7 +1858,7 @@ if abspath(PROGRAM_FILE) == @__FILE__
             fraction_active = 1.0   # Blow down dissipates nodes as needed.
         )
     end
-
+    #=
     println("\n" * "="^60)
     println("SINGLE SIMULATION DONE — NOW GENERATING SBI DATASET--Blowdown trims 70% gradually")
     println("="^60)
@@ -1877,5 +1882,5 @@ if abspath(PROGRAM_FILE) == @__FILE__
     println("   • Full SBI dataset (sbi_dataset.bson)")
     println("   • Ready for neural posterior training")
     println("\nNext step: run the training script (or add it here)!")
-    
+    =#
 end
