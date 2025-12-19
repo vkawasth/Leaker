@@ -27,5 +27,17 @@ Coarsened Brain looks as follows (only 1% nodes and vessels), as you can see not
 
 <img width="2029" height="1276" alt="Screenshot 2025-12-16 at 8 48 32 PM" src="https://github.com/user-attachments/assets/f25b7fcc-ab57-4db4-a7a7-4b01bc0b5815" />
 
+Best part is that user can diff these structures to find key differences from one function to another... I used 
+Simple setups like this
+#const OUTCOMES = [:epilepsy, :confusion, :blurred_vision, :sweating, :coma, :energized_alert, :hyperactivity, :anxiety]
+
+# HYPERACTIVITY CONNECTOME GENERATION
+#const OUTCOMES = [:hyperactivity, :hyperactivity, :hyperactivity, :hyperactivity, :hyperactivity, :hyperactivity, :hyperactivity, :hyperactivity]
+# COMA CONNECTOME GENERATION
+const OUTCOMES = [:coma, :coma, :coma, :coma, :coma, :coma, :coma, :coma]
+
+To then simple diff 349 KB vtp files in Para View using my custom filters taking care of geometrical differences (regions must be same and some missing nodes should not cause diff to fail.. This is how Mid Brain Connectome is generated. All filters (ArousalCircuitExtractor and ExtractFunctionalConnectomes are also checked in, into this repository.
+Values may look small due to normalization across 3.5 million nodes so use high precision math in Julia. 2800+ nodes and edges were isolated via this method, dhowing clear signal of Midbrain activity in triggering onset of Coma (out of 28662 total (1% of 3.5 million surviving Blowdown) in hyperactivity/Coma. Simple selecting high activity nodes will lead to misleading conclusions as auditory, visual and balance/breathing realted nodes always carry high probability to keep mouse alive.
+
 
 
