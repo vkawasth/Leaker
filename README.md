@@ -28,3 +28,4 @@ Coarsened Brain looks as follows (only 1% nodes and vessels), as you can see not
 <img width="2029" height="1276" alt="Screenshot 2025-12-16 at 8 48 32 PM" src="https://github.com/user-attachments/assets/f25b7fcc-ab57-4db4-a7a7-4b01bc0b5815" />
 
 
+
