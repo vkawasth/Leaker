@@ -6,7 +6,8 @@ From entire brian vessel graph maintaining hierarchical structures (modifying og
 
 This AG based entropy GV/BV simulation can extract key nodes and structures contributing towards inducement of COMA.
 
-Here is Coma Connectome.
+Here is Coma Connectome 2800 nodes out of 3.5 million nodes and 5.5 million edges which were coarsened using GV/BV flows to 1% high probability nodes/edges (28662 nodes), out of which 2800 nodes of mid brain indicating COMA driving nodes and edges along with their placement and pathways.
+
 
 <img width="675" height="554" alt="Screenshot 2025-12-18 at 8 42 06 PM" src="https://github.com/user-attachments/assets/14d482a9-c25f-45c6-975b-b5b2ec98ac2b" />
 
