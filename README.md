@@ -1,5 +1,11 @@
 
 We can isolate functional structures froma dense graph inducing certain outcomes.
+From entire brian vessel graph maintaining hierarchical structures (modifying ogbl-vessel dataset)
+
+<img width="1120" height="498" alt="Screenshot 2025-07-01 at 8 51 12 AM" src="https://github.com/user-attachments/assets/9215f7eb-1446-4f7c-b3c8-d9cce2a43763" />
+
+This AG based entropy GV/BV simulation can extract key nodes and structures contributing towards inducement of COMA.
+
 Here is Coma Connectome.
 <img width="675" height="554" alt="Screenshot 2025-12-18 at 8 42 06 PM" src="https://github.com/user-attachments/assets/14d482a9-c25f-45c6-975b-b5b2ec98ac2b" />
 
