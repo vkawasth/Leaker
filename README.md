@@ -21,3 +21,10 @@ Actual Middle Cerebral Artery is shown below for refrence, vessel graph used for
 
 This data shows midbrain isolation that regulates consciousness. (reference https://www.physio-pedia.com/Middle_Cerebral_Artery)
 The Midbrain (MB) is the core of the Ascending Reticular Activating System (ARAS) — the brain’s physical “on/off” switch for consciousness. Seeing a shift in this specific region when transitioning from hyperactivity to coma is the fundamental neurobiological marker of arousal state changes.
+
+Coarsened Brain looks as follows (only 1% nodes and vessels), as you can see noting gets completly eliminated during thsi coarsening.
+
+
+<img width="2029" height="1276" alt="Screenshot 2025-12-16 at 8 48 32 PM" src="https://github.com/user-attachments/assets/f25b7fcc-ab57-4db4-a7a7-4b01bc0b5815" />
+
+
