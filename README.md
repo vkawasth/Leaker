@@ -7,6 +7,7 @@ From entire brian vessel graph maintaining hierarchical structures (modifying og
 This AG based entropy GV/BV simulation can extract key nodes and structures contributing towards inducement of COMA.
 
 Here is Coma Connectome.
+
 <img width="675" height="554" alt="Screenshot 2025-12-18 at 8 42 06 PM" src="https://github.com/user-attachments/assets/14d482a9-c25f-45c6-975b-b5b2ec98ac2b" />
 
 Here are key edges/pathways.
