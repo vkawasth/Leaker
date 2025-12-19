@@ -19,5 +19,5 @@ Actual Middle Cerebural Artery is shown below for refrence, vessel graph used fo
 
 <img width="316" height="539" alt="Screenshot 2025-12-18 at 9 11 50 PM" src="https://github.com/user-attachments/assets/a41a14c0-1747-4bdc-844b-cf5285d70d71" />
 
-This data shows midbrain isolation that regulates consciousness.
+This data shows midbrain isolation that regulates consciousness. (reference https://www.physio-pedia.com/Middle_Cerebral_Artery)
 The Midbrain (MB) is the core of the Ascending Reticular Activating System (ARAS) — the brain’s physical “on/off” switch for consciousness. Seeing a shift in this specific region when transitioning from hyperactivity to coma is the fundamental neurobiological marker of arousal state changes.
